@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Two side-by-side pages with a highlight stripe on the left one. -->
+    <path android:fillColor="#FFFFFF" android:pathData="M28,34h24v40h-24z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M56,34h24v40h-24z" />
+    <path android:fillColor="#FFD54F" android:pathData="M31,44h18v5h-18z" />
+    <path android:fillColor="#90A4AE" android:pathData="M31,54h18v2h-18zM31,60h14v2h-14zM59,40h18v14h-18zM59,60h18v2h-18z" />
+</vector>
