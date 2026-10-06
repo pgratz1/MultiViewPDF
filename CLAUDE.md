@@ -51,7 +51,7 @@ Verified on the emulator:
    - no odd/even page pairing option for spreads (Shift+←/→ shifts a spread by one page instead)
    - large debug APK (~79 MB: icons-extended + no shrinking). Enable `isMinifyEnabled` in release; the MuPDF keep rule is already in `proguard-rules.pro`.
    - no app icon beyond a simple vector
-   - git repo on GitHub: `pgratz1/MultiViewPDF` (private), branch `main`
+   - git repo on GitHub: `pgratz1/MultiViewPDF` (public), branch `main`
 
 ## User / environment notes
 - The user (pgratz) builds personal apps in `~/Dropbox/Documents/Android_Dev/`.
