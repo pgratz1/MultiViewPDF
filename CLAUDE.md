@@ -57,7 +57,8 @@ Verified on the emulator:
 - The user (pgratz) builds personal apps in `~/Dropbox/Documents/Android_Dev/`.
 - Target hardware: a Pixel 10 on Android 17 driving VITURE Beast glasses in desktop mode. Sometimes the phone is mirrored and used with touch.
 - Design everything for **both touch and mouse/keyboard**, with a dark UI (black is see-through on the glasses).
-- This folder syncs via Dropbox between the desktop and the laptop. `app/build`, `.gradle` and `.kotlin` (~300 MB) sync too.
+- GitHub `main` (`pgratz1/MultiViewPDF`) is the coherence point between machines: pull before working, commit and push when done. Any non-Dropbox clone (e.g. `~/Documents/Android_Dev/MultiViewPDF` on the XPS) is disposable.
+- This folder syncs via Dropbox between the home desktop, the laptop and the XPS-8960 desktop. `app/build`, `.gradle` and `.kotlin` (~300 MB) sync too.
   - If Gradle acts strangely after switching machines, run `./gradlew clean`.
   - Better still, exclude those folders from Dropbox sync (Dropbox → Preferences → Selective sync, or `attr -s com.dropbox.ignored -V 1 app/build`).
   - Don't build on both machines at the same time.
@@ -87,7 +88,7 @@ adb logcat --pid=$(adb shell pidof com.pgratz.multiviewpdf)   # app logs; tag "M
 
 ## Build Commands
 
-On the laptop, the system JDK 25 works with no `JAVA_HOME`. On the desktop, set `export JAVA_HOME=~/android-studio/jbr` first. If Gradle fails with a JDK/class-version error on either machine, point `JAVA_HOME` at a JDK 17 or 21 (`sudo apt install openjdk-21-jdk` → `/usr/lib/jvm/java-21-openjdk-amd64`). Dropbox can drop the exec bit on `gradlew`. If `./gradlew` says permission denied, run `chmod +x gradlew` (or use `bash gradlew`).
+On the laptop, the system JDK 25 works with no `JAVA_HOME`. On the home desktop, set `export JAVA_HOME=~/android-studio/jbr` first. On the XPS-8960 (checked 2026-11-06, no Android Studio): JDK 21 from `apt` and an SDK installed with cmdline-tools at `~/Android/Sdk` (android-35, build-tools 35.0.0). Its default `java` is 25, which Gradle 8.11 cannot run on, so `export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64` is required; clean build + 33/33 unit tests pass there. If Gradle fails with a JDK/class-version error on either machine, point `JAVA_HOME` at a JDK 17 or 21 (`sudo apt install openjdk-21-jdk` → `/usr/lib/jvm/java-21-openjdk-amd64`). Dropbox can drop the exec bit on `gradlew`. If `./gradlew` says permission denied, run `chmod +x gradlew` (or use `bash gradlew`).
 
 ```bash
 ./gradlew assembleDebug                 # build
