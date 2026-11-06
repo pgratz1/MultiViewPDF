@@ -19,7 +19,7 @@ A PDF reader for use with AR glasses (VITURE Beast + Pixel, Android desktop mode
 
 ## Status (as of 2026-11-06)
 
-**2026-11-06, on the XPS-8960 + emulator:** added links and read-aloud (plan: `~/.claude/plans/ok-great-i-want-peppy-turing.md` on the XPS). Verified on the API 35 emulator with `tools/testpdf/links.tex` (build with `pdflatex`; web + internal links, "FIG. 3", "U.S. Pat. No.", claims) and the scanned USPTO patent US10000000: link chip → Chrome, internal link → page jump, read-from-here lands on the tapped claim, `,`/`.` cross page boundaries both ways, auto-advance onto the next page, manual page turn re-syncs, drawing sheets (OCR'd numerals only) are skipped via `SentenceSplitter.looksLikeProse`. **Not yet heard on the real Pixel/glasses** (phone was unplugged); the APK on the Pixel predates the hit-test and chip-placement fixes, so reinstall first.
+**2026-11-06, on the XPS-8960 + emulator:** added links and read-aloud (plan: `~/.claude/plans/ok-great-i-want-peppy-turing.md` on the XPS). Verified on the API 35 emulator with `tools/testpdf/links.tex` (build with `pdflatex`; web + internal links, "FIG. 3", "U.S. Pat. No.", claims) and the scanned USPTO patent US10000000: link chip → Chrome, internal link → page jump, read-from-here lands on the tapped claim, `,`/`.` cross page boundaries both ways, auto-advance onto the next page, manual page turn re-syncs, drawing sheets (OCR'd numerals only) are skipped via `SentenceSplitter.looksLikeProse`. Installed on the Pixel 10 the same day: **the voice works on the phone.** Still to try on the glasses in desktop mode (hover labels, hand cursor, media keys).
 
 Read-aloud design notes (see `ViewerViewModel` "read aloud" section and `model/Sentences.kt`):
 - `PdfSession.pageText()` (MuPDF thread) → `SentenceSplitter.split()` (Default dispatcher) → sentences with one quad per line. Abbreviations (`FIG.`, `No.`, `U.S.`, `et al.`, `e.g.` …) and OCR spacing (`FIG . 3`) don't split; claim numbers merge forward; `spoken()` expands `FIG.` → "Figure" etc. for the engine only.
@@ -77,6 +77,7 @@ Verified on the emulator:
   - Don't build on both machines at the same time.
 - `local.properties` (`sdk.dir=/home/pgratz/Android/Sdk`) also syncs. If the laptop's SDK lives elsewhere, Android Studio rewrites it. Remember it's shared.
 - On the XPS the Pixel connects over **USB** (serial `59180DLCR001R9`); Wi-Fi debugging doesn't work on that network. With both the phone and the emulator attached, use `adb -s <serial>` and `ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest` (which uninstalls the app afterwards).
+- **Debug signing differs per machine.** A build from one machine won't install over another machine's build (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`); `adb uninstall com.pgratz.multiviewpdf` first (app prefs are lost; annotations live in the PDFs). To avoid it, copy one `~/.android/debug.keystore` to every machine.
 - XPS emulator: `~/Android/Sdk/emulator/emulator -avd Pixel_10 -memory 4096` (API 35 Play image, so Google TTS is present). Landscape like the glasses: `adb shell settings put system user_rotation 1` (after `accelerometer_rotation 0`). Keys for testing: `adb shell input keyevent KEYCODE_P`; long-press: `input swipe x y x y 900`.
 
 ## Laptop setup & deploying to the phone over Wi-Fi
