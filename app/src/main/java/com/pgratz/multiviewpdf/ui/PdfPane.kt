@@ -4,6 +4,18 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.layout.layout
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.ui.graphics.drawscope.DrawStyle
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.text.style.TextOverflow
+import com.pgratz.multiviewpdf.model.LinkInfo
+import com.pgratz.multiviewpdf.model.PQuad
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -547,11 +559,19 @@ fun PdfPane(
         val tapSlop = with(density) { 14.dp.toPx() }
         val doubleTapSlop = with(density) { 40.dp.toPx() }
         val selColor = Color(0x553D8BFF)
+        val readColor = Color(0x66FFB74D)
         var hover by remember { mutableStateOf<Offset?>(null) }
+        // Link under the mouse: hand cursor, outline and a tooltip naming the target.
+        val hoverLink: LinkInfo? = hover?.let { h ->
+            if (transform == null || ui.menu != null) null
+            else ctl.toPage(h)?.let { p -> ui.links[page]?.hitTest(p, ctl.slop(tapSlop)) }
+        }
+        val reading = ui.tts?.takeIf { it.pane == index && it.page == page }
 
         Canvas(
             Modifier
                 .fillMaxSize()
+                .pointerHoverIcon(if (hoverLink != null) PointerIcon.Hand else PointerIcon.Default)
                 .pointerInput(index) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
@@ -609,7 +629,8 @@ fun PdfPane(
                                     used -> {}
                                     isDouble -> {
                                         // Double tap: zoom to the text column there; again to zoom back out.
-                                        val zoom = st.layout.panes[index].zoom
+                                        // Read the live zoom: a column zoom from the previous tap may land after this down.
+                                        val zoom = vm.state.value.layout.panes[index].zoom
                                         val visibleNow = ctl.transform?.visible
                                         if (zoom > 1.05f) ctl.zoomAround(down.position, 1f / zoom)
                                         else if (p != null && visibleNow != null) scope.launch {
@@ -652,6 +673,7 @@ fun PdfPane(
                         val startOffset = ctl.offset
                         var total = Offset.Zero
 
+                        vm.dismissLinkChip()
                         ctl.gestureActive = true
                         try { while (true) {
                             val ev = awaitPointerEvent()
@@ -750,17 +772,12 @@ fun PdfPane(
                 for (r in listOfNotNull(base, patch)) {
                     if (r.matches(page, t)) drawRendered(r, o, t.scale, filter, inAlpha)
                 }
+                if (reading != null) drawQuads(reading.quads, readColor, ctl::toScreen)
+                if (hoverLink != null) {
+                    drawQuads(listOf(PQuad.of(hoverLink.rect)), Color(0xFFFFB74D), ctl::toScreen, Stroke(width = 2f))
+                }
                 if (selection != null) {
-                    for (q in selection.quads) {
-                        val path = Path().apply {
-                            val ul = ctl.toScreen(q.ul); moveTo(ul.x, ul.y)
-                            val ur = ctl.toScreen(q.ur); lineTo(ur.x, ur.y)
-                            val lr = ctl.toScreen(q.lr); lineTo(lr.x, lr.y)
-                            val ll = ctl.toScreen(q.ll); lineTo(ll.x, ll.y)
-                            close()
-                        }
-                        drawPath(path, selColor)
-                    }
+                    drawQuads(selection.quads, selColor, ctl::toScreen)
                     if (selection.rectMode) {
                         val a = ctl.toScreen(selection.a)
                         val b = ctl.toScreen(selection.b)
@@ -808,7 +825,35 @@ fun PdfPane(
                 ) {
                     Text(annot.contents, color = Color.Black, fontSize = 14.sp, modifier = Modifier.padding(8.dp))
                 }
+            } else if (hoverLink != null) {
+                LinkLabel(
+                    hoverLink,
+                    Modifier.offset { IntOffset(hoverPos.x.roundToInt() + 16, hoverPos.y.roundToInt() + 16) },
+                )
             }
+        }
+
+        // A tapped link: shows where it goes; tapping the chip follows it.
+        val chip = ui.linkChip?.takeIf { it.pane == index && it.page == page }
+        if (chip != null && transform != null) {
+            LaunchedEffect(chip) {
+                delay(6000)
+                vm.dismissLinkChip()
+            }
+            val anchorPx = with(density) { 24.dp.toPx() }
+            val belowPx = with(density) { 20.dp.toPx() }
+            LinkLabel(
+                chip.link,
+                // Just below the tap, shifted left only as far as its real width needs.
+                Modifier.layout { measurable, constraints ->
+                    val p = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                    val x = (chip.at.x - anchorPx).roundToInt().coerceIn(0, max(0, viewW.roundToInt() - p.width))
+                    val y = (chip.at.y + belowPx).roundToInt().coerceIn(0, max(0, viewH.roundToInt() - p.height))
+                    layout(p.width, p.height) { p.place(x, y) }
+                },
+                onOpen = { vm.openLink(chip) },
+                onDismiss = vm::dismissLinkChip,
+            )
         }
 
         if (selection != null && selection.confirm && transform != null) {
@@ -830,6 +875,64 @@ fun PdfPane(
         if (menu != null && menu.pane == index) {
             Box(Modifier.offset { IntOffset(menu.at.x.roundToInt(), menu.at.y.roundToInt()) }) {
                 PaneMenu(index, ui, vm)
+            }
+        }
+    }
+}
+
+/** Fills (or strokes) page-space [quads] in screen space. */
+private fun DrawScope.drawQuads(quads: List<PQuad>, color: Color, toScreen: (PPoint) -> Offset, style: DrawStyle = Fill) {
+    for (q in quads) {
+        val path = Path().apply {
+            val ul = toScreen(q.ul); moveTo(ul.x, ul.y)
+            val ur = toScreen(q.ur); lineTo(ur.x, ur.y)
+            val lr = toScreen(q.lr); lineTo(lr.x, lr.y)
+            val ll = toScreen(q.ll); lineTo(ll.x, ll.y)
+            close()
+        }
+        drawPath(path, color, style = style)
+    }
+}
+
+/** Dark pill naming a link's target. With [onOpen] it is the tappable chip; without, a hover tooltip. */
+@Composable
+private fun LinkLabel(
+    link: LinkInfo,
+    modifier: Modifier,
+    onOpen: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null,
+) {
+    Surface(
+        modifier = modifier
+            .widthIn(max = 340.dp)
+            .then(if (onOpen != null) Modifier.clickable(onClick = onOpen) else Modifier),
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xEE202020),
+        contentColor = Color.White,
+        shadowElevation = 6.dp,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 12.dp, end = if (onDismiss != null) 4.dp else 12.dp, top = 6.dp, bottom = 6.dp),
+        ) {
+            Icon(
+                if (link.isExternal) Icons.AutoMirrored.Filled.OpenInNew else Icons.Filled.Description,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = Color(0xFFFFB74D),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (onOpen != null) "Open ${link.label}" else link.label,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.Close, "Dismiss", Modifier.size(16.dp))
+                }
             }
         }
     }
@@ -925,7 +1028,7 @@ private fun PaneFooter(index: Int, ui: UiState, vm: ViewerViewModel, modifier: M
 }
 
 @Composable
-private fun SmallIcon(
+fun SmallIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     tint: Color = Color.White,
@@ -966,6 +1069,16 @@ private fun PaneMenu(index: Int, ui: UiState, vm: ViewerViewModel) {
                 text = { Text("Start highlight here") },
                 onClick = { vm.startHighlightAt(index, menu.page, menu.point) },
             )
+            HorizontalDivider()
+        }
+        if (validPage) {
+            DropdownMenuItem(
+                text = { Text("Read aloud from here") },
+                onClick = { vm.readFrom(index, menu.page, menu.point) },
+            )
+            if (ui.tts != null) {
+                DropdownMenuItem(text = { Text("Stop reading") }, onClick = { vm.dismissMenu(); vm.stopReading() })
+            }
             HorizontalDivider()
         }
         if (dual) {

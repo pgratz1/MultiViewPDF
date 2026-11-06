@@ -1,6 +1,8 @@
 package com.pgratz.multiviewpdf
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -57,6 +59,7 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { vm.openRequests.collect { pickPdf() } }
                 launch { vm.saveAsRequests.collect { pickSaveAs() } }
+                launch { vm.linkRequests.collect { openLink(it) } }
             }
         }
 
@@ -81,6 +84,18 @@ class MainActivity : ComponentActivity() {
         val c = WindowCompat.getInsetsController(window, window.decorView)
         c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (hidden) c.hide(WindowInsetsCompat.Type.systemBars()) else c.show(WindowInsetsCompat.Type.systemBars())
+    }
+
+    /** External PDF link: hand it to the browser (or mail app, ...). */
+    private fun openLink(uri: String) {
+        val parsed = Uri.parse(uri).let { if (it.scheme == null) Uri.parse("https://$uri") else it }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, parsed))
+        } catch (e: ActivityNotFoundException) {
+            vm.toast("No app can open this link")
+        } catch (e: Exception) {
+            vm.toast("Couldn't open link: ${e.message}")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -126,6 +141,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        vm.pauseReading()
         vm.autosave()
     }
 }

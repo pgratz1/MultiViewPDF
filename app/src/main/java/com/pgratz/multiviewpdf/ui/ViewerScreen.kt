@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Comment
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Fullscreen
@@ -25,8 +27,15 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PanTool
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.BorderColor
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.ViewColumn
@@ -53,11 +62,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pgratz.multiviewpdf.Dialog
+import com.pgratz.multiviewpdf.TtsState
+import com.pgratz.multiviewpdf.TtsStatus
 import com.pgratz.multiviewpdf.UiState
 import com.pgratz.multiviewpdf.ViewerViewModel
 import com.pgratz.multiviewpdf.model.Tool
 import com.pgratz.multiviewpdf.model.ViewMode
+import kotlin.math.roundToInt
 
 @Composable
 fun ViewerScreen(ui: UiState, vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs: () -> Unit) {
@@ -92,6 +105,12 @@ fun ViewerScreen(ui: UiState, vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs:
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp))
+        ui.tts?.let {
+            TtsBar(
+                it, ui.prefs.speechRate, vm,
+                Modifier.align(Alignment.TopCenter).padding(top = if (ui.fullscreen) 4.dp else 52.dp),
+            )
+        }
         if (ui.saving) {
             CircularProgressIndicator(Modifier.align(Alignment.Center))
         }
@@ -157,6 +176,20 @@ private fun TopBar(ui: UiState, vm: ViewerViewModel, name: String, onOpen: () ->
                 Spacer(Modifier.width(8.dp))
                 CropButton(ui, vm)
                 ToolIcon(Icons.Filled.InvertColors, "Dark pages (I)", ui.prefs.invert) { vm.toggleInvert() }
+                val reading = ui.tts?.status
+                BarIcon(
+                    when (reading) {
+                        null -> Icons.Filled.RecordVoiceOver
+                        TtsStatus.PAUSED -> Icons.Filled.PlayArrow
+                        else -> Icons.Filled.Pause
+                    },
+                    when (reading) {
+                        null -> "Read aloud (P)"
+                        TtsStatus.PAUSED -> "Resume reading (P)"
+                        else -> "Pause reading (P)"
+                    },
+                    tint = if (reading != null) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                ) { vm.toggleReading() }
                 BarIcon(Icons.Filled.Fullscreen, "Fullscreen (F11)") { vm.setFullscreen(true) }
                 BarIcon(
                     Icons.Filled.Save, "Save (Ctrl+S)",
@@ -261,6 +294,40 @@ private fun OverflowMenu(vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs: () -
             DropdownMenuItem(text = { Text("Keyboard shortcuts (?)") }, onClick = {
                 open = false; vm.openDialog(Dialog.Shortcuts)
             })
+        }
+    }
+}
+
+/** Floating read-aloud controls, shown while a reading session exists (playing or paused). */
+@Composable
+private fun TtsBar(t: TtsState, rate: Float, vm: ViewerViewModel, modifier: Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xCC202020),
+        contentColor = Color.White,
+        shadowElevation = 4.dp,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+            SmallIcon(Icons.Filled.SkipPrevious, "Previous sentence (,)") { vm.skipSentence(-1) }
+            if (t.status == TtsStatus.STARTING) {
+                CircularProgressIndicator(Modifier.padding(8.dp).size(20.dp), strokeWidth = 2.dp, color = Color.White)
+            } else {
+                SmallIcon(
+                    if (t.status == TtsStatus.PLAYING) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (t.status == TtsStatus.PLAYING) "Pause (P)" else "Resume (P)",
+                ) { vm.toggleReading() }
+            }
+            SmallIcon(Icons.Filled.SkipNext, "Next sentence (.)") { vm.skipSentence(+1) }
+            Text(
+                if (t.count > 0) "p. ${t.page + 1} · ${t.index + 1}/${t.count}" else "p. ${t.page + 1}",
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 6.dp),
+            )
+            SmallIcon(Icons.Filled.Remove, "Slower (<)") { vm.changeSpeechRate(-0.1f) }
+            Text("${(rate * 10).roundToInt() / 10.0}×", fontSize = 13.sp)
+            SmallIcon(Icons.Filled.Add, "Faster (>)") { vm.changeSpeechRate(+0.1f) }
+            SmallIcon(Icons.Filled.Stop, "Stop reading (Shift+P)") { vm.stopReading() }
         }
     }
 }

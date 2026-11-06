@@ -170,11 +170,15 @@ private val shortcuts = listOf(
     "I" to "Dark (inverted) pages",
     "G" to "Go to page",
     "F11" to "Fullscreen on / off",
+    "P / Shift+P" to "Read aloud: play / pause, stop",
+    ", / ." to "Previous / next sentence",
+    "< / >" to "Slower / faster speech",
     "Ctrl+S / Ctrl+Shift+S" to "Save / save a copy",
     "Ctrl+O / Ctrl+W" to "Open / close",
     "Right-click / long-press" to "Note, highlight and pane menu",
     "Double-click / double-tap" to "Zoom to the text column (again: zoom out)",
     "Click / tap outer page edge" to "Scroll sideways, then turn the page",
+    "Click / tap a link" to "Show where it goes; tap the chip to open it",
 )
 
 @Composable

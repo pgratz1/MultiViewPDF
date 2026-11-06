@@ -9,13 +9,26 @@ A PDF reader for use with AR glasses (VITURE Beast + Pixel, Android desktop mode
 - independent per-pane **rotation** (view-only)
 - whole-document **crop** (view-only, manual or auto), remembered per document
 - **sticky notes and highlights saved as standard PDF annotations** (Text / Highlight), written with incremental saves so Okular, Xodo and Acrobat see them
+- **clickable links**: tap/click a link → chip naming the target ("Open uspto.gov" / "Open Page 7"); tap the chip to open the browser or jump the pane. Mouse hover shows the same label, outlines the link and switches to a hand cursor.
+- **read aloud** with the system `TextToSpeech` engine: toolbar button / `P` reads the active pane's page from the top and turns pages as it goes; "Read aloud from here" in the long-press menu starts at the tapped sentence. The spoken sentence is highlighted in amber; a floating bar has prev/next sentence, pause, stop and speed (persisted in `AppPrefs.speechRate`).
 
 - **Package:** `com.pgratz.multiviewpdf`
 - **Min SDK:** 31; compile/target 35; ABIs arm64-v8a + x86_64 (emulator)
 - **Language/UI:** Kotlin, Jetpack Compose + Material3 (dark theme)
 - **PDF engine:** MuPDF `com.artifex.mupdf:fitz` from `https://maven.ghostscript.com` (AGPL)
 
-## Status (as of 2026-10-06)
+## Status (as of 2026-11-06)
+
+**2026-11-06, on the XPS-8960 + emulator:** added links and read-aloud (plan: `~/.claude/plans/ok-great-i-want-peppy-turing.md` on the XPS). Verified on the API 35 emulator with `tools/testpdf/links.tex` (build with `pdflatex`; web + internal links, "FIG. 3", "U.S. Pat. No.", claims) and the scanned USPTO patent US10000000: link chip → Chrome, internal link → page jump, read-from-here lands on the tapped claim, `,`/`.` cross page boundaries both ways, auto-advance onto the next page, manual page turn re-syncs, drawing sheets (OCR'd numerals only) are skipped via `SentenceSplitter.looksLikeProse`. **Not yet heard on the real Pixel/glasses** (phone was unplugged); the APK on the Pixel predates the hit-test and chip-placement fixes, so reinstall first.
+
+Read-aloud design notes (see `ViewerViewModel` "read aloud" section and `model/Sentences.kt`):
+- `PdfSession.pageText()` (MuPDF thread) → `SentenceSplitter.split()` (Default dispatcher) → sentences with one quad per line. Abbreviations (`FIG.`, `No.`, `U.S.`, `et al.`, `e.g.` …) and OCR spacing (`FIG . 3`) don't split; claim numbers merge forward; `spoken()` expands `FIG.` → "Figure" etc. for the engine only.
+- Utterance ids are `generation:page:index`; every stop/seek bumps the generation so stale engine callbacks (binder thread → `SharedFlow`) are ignored. Two utterances are queued at a time. There is no engine pause: pause = stop + remember index.
+- A page is skipped when reading on if it has fewer than 30 words of ≥4 letters (patent figure sheets). "Read from here" never skips.
+- Keys: `P` play/pause, `Shift+P` stop, `,`/`.` sentence back/forward, `<`/`>` slower/faster, media keys. `Esc` first dismisses a link chip.
+- Known gaps: reading order is MuPDF block order (fine on the USPTO sample, including two columns); the front page reads the bibliographic fields; no audio focus request; no odd/even pairing.
+
+### Earlier status (2026-10-06)
 
 **The plan's milestones 1–5 are all implemented** (see `PLAN.md` for the original design and its feature decisions: crop and rotation are view-only and remembered per document; v1 annotations are notes + highlights only). Development so far ran on the desktop against the `Pixel_10` emulator. **The app has not yet run on the real Pixel or the Viture glasses.** That's the next step, from the laptop, over Wi-Fi adb.
 
@@ -63,6 +76,8 @@ Verified on the emulator:
   - Better still, exclude those folders from Dropbox sync (Dropbox → Preferences → Selective sync, or `attr -s com.dropbox.ignored -V 1 app/build`).
   - Don't build on both machines at the same time.
 - `local.properties` (`sdk.dir=/home/pgratz/Android/Sdk`) also syncs. If the laptop's SDK lives elsewhere, Android Studio rewrites it. Remember it's shared.
+- On the XPS the Pixel connects over **USB** (serial `59180DLCR001R9`); Wi-Fi debugging doesn't work on that network. With both the phone and the emulator attached, use `adb -s <serial>` and `ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest` (which uninstalls the app afterwards).
+- XPS emulator: `~/Android/Sdk/emulator/emulator -avd Pixel_10 -memory 4096` (API 35 Play image, so Google TTS is present). Landscape like the glasses: `adb shell settings put system user_rotation 1` (after `accelerometer_rotation 0`). Keys for testing: `adb shell input keyevent KEYCODE_P`; long-press: `input swipe x y x y 900`.
 
 ## Laptop setup & deploying to the phone over Wi-Fi
 

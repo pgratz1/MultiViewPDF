@@ -14,6 +14,7 @@ import com.pgratz.multiviewpdf.model.AppPrefs
 import com.pgratz.multiviewpdf.model.CropMargins
 import com.pgratz.multiviewpdf.model.FitMode
 import com.pgratz.multiviewpdf.model.HighlightColors
+import com.pgratz.multiviewpdf.model.LinkInfo
 import com.pgratz.multiviewpdf.model.Navigator
 import com.pgratz.multiviewpdf.model.PPoint
 import com.pgratz.multiviewpdf.model.PQuad
@@ -21,6 +22,8 @@ import com.pgratz.multiviewpdf.model.PRect
 import com.pgratz.multiviewpdf.model.PageTransform
 import com.pgratz.multiviewpdf.model.RecentDoc
 import com.pgratz.multiviewpdf.model.Selection
+import com.pgratz.multiviewpdf.model.Sentence
+import com.pgratz.multiviewpdf.model.SentenceSplitter
 import com.pgratz.multiviewpdf.model.Tool
 import com.pgratz.multiviewpdf.model.ViewLayout
 import com.pgratz.multiviewpdf.model.ViewMode
@@ -28,7 +31,9 @@ import com.pgratz.multiviewpdf.model.hitTest
 import com.pgratz.multiviewpdf.pdf.DocumentStore
 import com.pgratz.multiviewpdf.pdf.PdfSession
 import com.pgratz.multiviewpdf.pdf.PrefsStore
+import com.pgratz.multiviewpdf.tts.SpeechReader
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -45,11 +50,27 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 data class DocInfo(val uri: Uri, val name: String, val fingerprint: String, val pageCount: Int)
 
 /** Long-press / right-click menu. [at] is in pane pixels; [annot] is set when over one. */
 data class ContextMenu(val pane: Int, val page: Int, val at: Offset, val point: PPoint, val annot: AnnotInfo?)
+
+/** A tapped link, shown as a chip near [at] (pane pixels) until it is opened or dismissed. */
+data class LinkChip(val pane: Int, val page: Int, val at: Offset, val link: LinkInfo)
+
+enum class TtsStatus { STARTING, PLAYING, PAUSED }
+
+/** Read-aloud progress (null in [UiState.tts] = idle). [quads] outline the sentence being spoken. */
+data class TtsState(
+    val status: TtsStatus,
+    val pane: Int,
+    val page: Int,
+    val index: Int,
+    val count: Int,
+    val quads: List<PQuad>,
+)
 
 /** Note/comment editor. [annotIndex] null = new sticky note at [at]. */
 data class NoteEdit(
@@ -90,6 +111,9 @@ data class UiState(
     val dialog: Dialog? = null,
     val bounds: Map<Int, PRect> = emptyMap(),
     val annots: Map<Int, List<AnnotInfo>> = emptyMap(),
+    val links: Map<Int, List<LinkInfo>> = emptyMap(),
+    val linkChip: LinkChip? = null,
+    val tts: TtsState? = null,
     /** Bumped when a page's annotations change so panes re-render it. */
     val versions: Map<Int, Int> = emptyMap(),
     val prefs: AppPrefs = AppPrefs(),
@@ -107,6 +131,15 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     private var session: PdfSession? = null
     private var selectionJob: Job? = null
     private val pageLoads = HashSet<Int>()
+
+    private var reader: SpeechReader? = null
+    /** Bumped on every stop/seek; utterance ids carry it so stale engine callbacks are ignored. */
+    private var ttsGeneration = 0
+    private var ttsJob: Job? = null
+    private val sentenceCache = object : LinkedHashMap<Int, List<Sentence>>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, List<Sentence>>): Boolean =
+            size > SENTENCE_CACHE
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -191,6 +224,8 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun closeSession() {
+        stopReading()
+        sentenceCache.clear()
         val s = session ?: return
         session = null
         pageLoads.clear()
@@ -251,13 +286,16 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         val s = session ?: return
         if (page !in 0 until s.pageCount) return
         val st = _state.value
-        if (page in st.bounds && page in st.annots) return
+        if (page in st.bounds && page in st.annots && page in st.links) return
         if (!pageLoads.add(page)) return
         viewModelScope.launch {
             try {
                 val b = s.bounds(page)
                 val a = s.annotations(page)
-                _state.update { it.copy(bounds = it.bounds + (page to b), annots = it.annots + (page to a)) }
+                val l = runCatching { s.links(page) }.getOrDefault(emptyList())
+                _state.update {
+                    it.copy(bounds = it.bounds + (page to b), annots = it.annots + (page to a), links = it.links + (page to l))
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "load page $page failed", e)
             } finally {
@@ -293,8 +331,13 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { s ->
             val next = f(s.layout, s.pageCount)
             if (next == s.layout) s
-            else s.copy(layout = next, selection = s.selection?.takeIf { sel -> next.panes[sel.pane].page == sel.page })
+            else s.copy(
+                layout = next,
+                selection = s.selection?.takeIf { sel -> next.panes[sel.pane].page == sel.page },
+                linkChip = s.linkChip?.takeIf { c -> next.panes[c.pane].page == c.page },
+            )
         }
+        syncReadingToLayout()
     }
 
     fun turn(dir: Int, fine: Boolean = false) {
@@ -333,7 +376,11 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleLinked() = nav { l, n -> Navigator.setLinked(l, !l.linked, n) }
 
-    fun swapPanes() = nav { l, _ -> Navigator.swap(l) }
+    fun swapPanes() {
+        // The reader follows its page to the other pane.
+        _state.update { s -> s.copy(tts = s.tts?.let { it.copy(pane = 1 - it.pane) }) }
+        nav { l, _ -> Navigator.swap(l) }
+    }
 
     fun sendToOther(pane: Int) = nav { l, _ -> Navigator.sendToOther(l, pane) }
 
@@ -388,7 +435,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onLongPress(pane: Int, page: Int, at: Offset, point: PPoint, slop: Float) {
         val annot = _state.value.annots[page]?.hitTest(point, slop)
-        _state.update { it.copy(menu = ContextMenu(pane, page, at, point, annot), selection = null) }
+        _state.update { it.copy(menu = ContextMenu(pane, page, at, point, annot), selection = null, linkChip = null) }
     }
 
     /** Tap on page content. Returns false if nothing used it (pane may then flip pages). */
@@ -404,12 +451,24 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             newNote(page, point)
             return true
         }
-        val annot = st.annots[page]?.hitTest(point, slop) ?: return false
-        when (annot.type) {
-            AnnotType.NOTE -> editAnnotText(page, annot)
-            else -> _state.update { it.copy(menu = ContextMenu(pane, page, at, point, annot)) }
+        val annot = st.annots[page]?.hitTest(point, slop)
+        if (annot != null) {
+            when (annot.type) {
+                AnnotType.NOTE -> editAnnotText(page, annot)
+                else -> _state.update { it.copy(menu = ContextMenu(pane, page, at, point, annot)) }
+            }
+            return true
         }
-        return true
+        val link = st.links[page]?.hitTest(point, slop)
+        if (link != null) {
+            _state.update { it.copy(linkChip = LinkChip(pane, page, at, link)) }
+            return true
+        }
+        if (st.linkChip != null) {
+            dismissLinkChip()
+            return true
+        }
+        return false
     }
 
     fun dismissMenu() = _state.update { it.copy(menu = null) }
@@ -550,6 +609,303 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------------------------------------------------------------- links
+
+    /** Tap on the chip: follow the link. */
+    fun openLink(chip: LinkChip) {
+        _state.update { it.copy(linkChip = null) }
+        val target = chip.link.page
+        if (target != null) goTo(chip.pane, target) else linkRequests.tryEmit(chip.link.uri)
+    }
+
+    fun dismissLinkChip() {
+        if (_state.value.linkChip != null) _state.update { it.copy(linkChip = null) }
+    }
+
+    /** External link URIs for the activity to hand to the browser. */
+    val linkRequests = MutableSharedFlow<String>(extraBufferCapacity = 1)
+
+    // ---------------------------------------------------------------- read aloud
+
+    private fun ensureReader(): SpeechReader {
+        reader?.let { return it }
+        val r = SpeechReader(getApplication<Application>(), _state.value.prefs.speechRate)
+        reader = r
+        viewModelScope.launch { r.events.collect { onSpeechEvent(it) } }
+        return r
+    }
+
+    /** Sentences of [page], split off the MuPDF thread and cached; null if no document is open. */
+    private suspend fun sentences(page: Int): List<Sentence>? {
+        val s = session ?: return null
+        if (page !in 0 until s.pageCount) return emptyList()
+        sentenceCache[page]?.let { return it }
+        val text = s.pageText(page)
+        val list = withContext(Dispatchers.Default) { SentenceSplitter.split(text) }
+        sentenceCache[page] = list
+        return list
+    }
+
+    /** Toolbar button / P: start on the active pane's page, else pause / resume. */
+    fun toggleReading() {
+        val t = _state.value.tts
+        when (t?.status) {
+            null -> {
+                val l = _state.value.layout
+                startReading(l.active, l.panes[l.active].page)
+            }
+            TtsStatus.PLAYING, TtsStatus.STARTING -> pauseReading()
+            TtsStatus.PAUSED -> resumeReading()
+        }
+    }
+
+    /** Pane menu: start at the sentence under the long-press. */
+    fun readFrom(pane: Int, page: Int, at: PPoint) {
+        _state.update { it.copy(menu = null) }
+        startReading(pane, page, at)
+    }
+
+    private fun startReading(pane: Int, page: Int, at: PPoint? = null) {
+        if (page !in 0 until _state.value.pageCount) return
+        val gen = ++ttsGeneration
+        ttsJob?.cancel()
+        ensureReader().stop()
+        _state.update { it.copy(tts = TtsState(TtsStatus.STARTING, pane, page, 0, 0, emptyList()), menu = null) }
+        ttsJob = viewModelScope.launch {
+            // Toolbar play on a drawing sheet: look ahead for the next page of prose.
+            // An explicit "read from here" reads whatever is under the finger.
+            var p = page
+            var list = sentences(p)
+            if (at == null) {
+                while (list != null && !hasProse(list) && p - page < MAX_SKIP && p + 1 < _state.value.pageCount) list = sentences(++p)
+            }
+            if (gen != ttsGeneration) return@launch
+            if (list.isNullOrEmpty()) {
+                stopReading()
+                toast("No readable text on this page")
+                return@launch
+            }
+            if (p != page) {
+                toast("No text on page ${page + 1}; reading from page ${p + 1}")
+                showReadingPage(pane, p)
+            }
+            val index = if (at != null && p == page) SentenceSplitter.indexAt(list, at, slop = 4f) else 0
+            speakAt(pane, p, index, list, gen, TtsStatus.PLAYING)
+        }
+    }
+
+    fun pauseReading() {
+        val t = _state.value.tts ?: return
+        if (t.status == TtsStatus.PAUSED) return
+        ++ttsGeneration
+        ttsJob?.cancel()
+        reader?.stop()
+        _state.update { it.copy(tts = t.copy(status = TtsStatus.PAUSED)) }
+    }
+
+    fun resumeReading() {
+        val t = _state.value.tts ?: return
+        if (t.status != TtsStatus.PAUSED) return
+        restartAt(t.pane, t.page, t.index, TtsStatus.PLAYING)
+    }
+
+    fun stopReading() {
+        ++ttsGeneration
+        ttsJob?.cancel()
+        reader?.stop()
+        if (_state.value.tts != null) _state.update { it.copy(tts = null) }
+    }
+
+    /** Previous / next sentence ([dir] = -1 / +1), crossing page boundaries. */
+    fun skipSentence(dir: Int) {
+        val t = _state.value.tts ?: return
+        val status = if (t.status == TtsStatus.PAUSED) TtsStatus.PAUSED else TtsStatus.PLAYING
+        val gen = ++ttsGeneration
+        ttsJob?.cancel()
+        reader?.stop()
+        ttsJob = viewModelScope.launch {
+            val list = sentences(t.page) ?: return@launch
+            val next = t.index + dir
+            when {
+                next < 0 -> {
+                    var p = t.page - 1
+                    while (p >= 0) {
+                        val prev = sentences(p)
+                        if (gen != ttsGeneration) return@launch
+                        if (!prev.isNullOrEmpty()) {
+                            showReadingPage(t.pane, p)
+                            speakAt(t.pane, p, prev.lastIndex, prev, gen, status)
+                            return@launch
+                        }
+                        p--
+                    }
+                    if (list.isNotEmpty()) speakAt(t.pane, t.page, 0, list, gen, status)
+                }
+                next >= list.size -> advancePage(t.pane, t.page, gen, status)
+                else -> speakAt(t.pane, t.page, next, list, gen, status)
+            }
+        }
+    }
+
+    fun setSpeechRate(rate: Float) {
+        val r = (rate.coerceIn(0.5f, 2f) * 10).roundToInt() / 10f
+        updatePrefs { it.copy(speechRate = r) }
+        reader?.setRate(r)
+        // The engine applies the rate to later utterances only; restart the sentence to hear it now.
+        val t = _state.value.tts
+        if (t != null && t.status == TtsStatus.PLAYING) restartAt(t.pane, t.page, t.index, TtsStatus.PLAYING)
+    }
+
+    fun changeSpeechRate(delta: Float) = setSpeechRate(_state.value.prefs.speechRate + delta)
+
+    /** Re-reads [page] from [index] (or only moves the marker there when paused). */
+    private fun restartAt(pane: Int, page: Int, index: Int, status: TtsStatus) {
+        val gen = ++ttsGeneration
+        ttsJob?.cancel()
+        reader?.stop()
+        ttsJob = viewModelScope.launch {
+            val list = sentences(page)
+            if (gen != ttsGeneration) return@launch
+            if (list.isNullOrEmpty()) {
+                _state.update { s ->
+                    s.copy(tts = s.tts?.copy(status = TtsStatus.PAUSED, pane = pane, page = page, index = 0, count = 0, quads = emptyList()))
+                }
+                if (list != null) toast("No text on this page")
+                return@launch
+            }
+            speakAt(pane, page, index, list, gen, status)
+        }
+    }
+
+    /** Points the reader at sentence [index] of [page] and, unless paused, speaks it and queues the next. */
+    private fun speakAt(pane: Int, page: Int, index: Int, list: List<Sentence>, gen: Int, status: TtsStatus) {
+        val i = index.coerceIn(0, list.lastIndex)
+        val r = ensureReader()
+        val shown = when {
+            status == TtsStatus.PAUSED -> TtsStatus.PAUSED
+            r.isReady -> TtsStatus.PLAYING
+            else -> TtsStatus.STARTING
+        }
+        _state.update { it.copy(tts = TtsState(shown, pane, page, i, list.size, list[i].quads)) }
+        if (status == TtsStatus.PAUSED) return
+        r.speak(utteranceId(gen, page, i), spokenText(r, list[i]), flush = true)
+        if (i + 1 < list.size) r.speak(utteranceId(gen, page, i + 1), spokenText(r, list[i + 1]), flush = false)
+    }
+
+    /** Drawing sheets (OCR'd reference numerals only) are skipped when reading on. */
+    private fun hasProse(list: List<Sentence>) = list.isNotEmpty() && SentenceSplitter.looksLikeProse(list)
+
+    private fun spokenText(r: SpeechReader, s: Sentence) = SentenceSplitter.spoken(s.text).take(r.maxLength)
+
+    private fun utteranceId(gen: Int, page: Int, index: Int) = "$gen:$page:$index"
+
+    private fun parseId(id: String): Triple<Int, Int, Int>? {
+        val parts = id.split(':')
+        if (parts.size != 3) return null
+        val gen = parts[0].toIntOrNull() ?: return null
+        val page = parts[1].toIntOrNull() ?: return null
+        val index = parts[2].toIntOrNull() ?: return null
+        return Triple(gen, page, index)
+    }
+
+    /** Moves [pane] to [page] and the reader with it in one update, so [syncReadingToLayout] sees no mismatch. */
+    private fun showReadingPage(pane: Int, page: Int) {
+        _state.update { s ->
+            val next = Navigator.goTo(s.layout, pane, page, s.pageCount).copy(active = pane)
+            s.copy(
+                layout = next,
+                tts = s.tts?.copy(pane = pane, page = page),
+                selection = s.selection?.takeIf { sel -> next.panes[sel.pane].page == sel.page },
+                linkChip = s.linkChip?.takeIf { c -> next.panes[c.pane].page == c.page },
+            )
+        }
+    }
+
+    /** After the last sentence of [fromPage]: continue on the next page that has text. */
+    private fun advancePage(pane: Int, fromPage: Int, gen: Int, status: TtsStatus) {
+        ttsJob = viewModelScope.launch {
+            val n = _state.value.pageCount
+            var p = fromPage + 1
+            var list: List<Sentence>? = null
+            var skipped = 0
+            while (p < n) {
+                list = sentences(p)
+                if (gen != ttsGeneration) return@launch
+                if (list == null || hasProse(list) || skipped >= MAX_SKIP) break
+                skipped++
+                p++
+            }
+            if (list.isNullOrEmpty() || p >= n) {
+                stopReading()
+                toast(if (p >= n) "End of document" else "No more text found")
+                return@launch
+            }
+            if (skipped > 0) toast("Skipped $skipped page(s) of drawings")
+            val l = _state.value.layout
+            val spread = l.mode == ViewMode.DUAL && Navigator.isSpread(l)
+            val visibleIn = if (spread) l.panes.indexOfFirst { it.page == p } else -1
+            val target = when {
+                visibleIn >= 0 -> visibleIn // the other half of the spread: just move the marker
+                spread -> 0 // turn the spread and read its left page first
+                else -> pane
+            }
+            if (visibleIn >= 0) {
+                _state.update { s -> s.copy(layout = s.layout.copy(active = target), tts = s.tts?.copy(pane = target, page = p)) }
+            } else {
+                showReadingPage(target, p)
+            }
+            speakAt(target, p, 0, list, gen, status)
+        }
+    }
+
+    /** A manual page turn in the reading pane restarts reading at the top of the new page. */
+    private fun syncReadingToLayout() {
+        val st = _state.value
+        val t = st.tts ?: return
+        val shown = st.layout.panes[t.pane].page
+        if (shown != t.page) {
+            restartAt(t.pane, shown, 0, if (t.status == TtsStatus.PAUSED) TtsStatus.PAUSED else TtsStatus.PLAYING)
+        }
+    }
+
+    private fun onSpeechEvent(e: SpeechReader.Event) {
+        when (e) {
+            SpeechReader.Event.Ready -> {}
+            SpeechReader.Event.InitFailed -> {
+                _state.update { it.copy(tts = null) }
+                toast("No text-to-speech engine available (Settings → Accessibility → Text-to-speech output)")
+            }
+            is SpeechReader.Event.Started -> {
+                val (gen, page, i) = parseId(e.id) ?: return
+                if (gen != ttsGeneration) return
+                val list = sentenceCache[page] ?: return
+                if (i !in list.indices) return
+                _state.update { st ->
+                    val t = st.tts ?: return@update st
+                    st.copy(tts = t.copy(status = TtsStatus.PLAYING, page = page, index = i, count = list.size, quads = list[i].quads))
+                }
+                // Keep one sentence queued behind the current one so there is no gap.
+                val r = ensureReader()
+                if (i + 2 < list.size) r.speak(utteranceId(gen, page, i + 2), spokenText(r, list[i + 2]), flush = false)
+                if (i == list.lastIndex) viewModelScope.launch { runCatching { sentences(page + 1) } }
+            }
+            is SpeechReader.Event.Done -> {
+                val (gen, page, i) = parseId(e.id) ?: return
+                if (gen != ttsGeneration) return
+                val list = sentenceCache[page] ?: return
+                val t = _state.value.tts ?: return
+                if (i == list.lastIndex) advancePage(t.pane, page, gen, TtsStatus.PLAYING)
+            }
+            is SpeechReader.Event.Stopped -> {}
+            is SpeechReader.Event.Error -> {
+                val gen = e.id?.let { parseId(it)?.first }
+                if (gen != null && gen != ttsGeneration) return
+                stopReading()
+                toast("Speech failed (error ${e.code})")
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- dialogs & messages
 
     fun openDialog(d: Dialog) = _state.update { it.copy(dialog = d, menu = null) }
@@ -568,6 +924,14 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         if (st.doc == null) {
             if (ctrl && keyCode == KeyEvent.KEYCODE_O) return openRequests.tryEmit(Unit)
             return false
+        }
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                toggleReading(); return true
+            }
+            KeyEvent.KEYCODE_MEDIA_STOP -> { stopReading(); return true }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> { skipSentence(+1); return true }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { skipSentence(-1); return true }
         }
         if (st.dialog != null || st.noteEdit != null) return false
         val active = st.layout.active
@@ -601,7 +965,11 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             KeyEvent.KEYCODE_S -> sendToOther(active)
             KeyEvent.KEYCODE_H -> setTool(if (st.tool == Tool.HIGHLIGHT) Tool.PAN else Tool.HIGHLIGHT)
             KeyEvent.KEYCODE_N -> setTool(if (st.tool == Tool.NOTE) Tool.PAN else Tool.NOTE)
+            KeyEvent.KEYCODE_P -> if (shift) stopReading() else toggleReading()
+            KeyEvent.KEYCODE_COMMA -> if (shift) changeSpeechRate(-0.1f) else skipSentence(-1)
+            KeyEvent.KEYCODE_PERIOD -> if (shift) changeSpeechRate(+0.1f) else skipSentence(+1)
             KeyEvent.KEYCODE_ESCAPE -> when {
+                st.linkChip != null -> dismissLinkChip()
                 st.menu != null -> dismissMenu()
                 st.selection != null -> cancelSelection()
                 else -> setTool(Tool.PAN)
@@ -627,6 +995,8 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     val saveAsRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     override fun onCleared() {
+        reader?.shutdown()
+        reader = null
         val s = session ?: return
         session = null
         // viewModelScope is already cancelled here; close on the MuPDF thread directly.
@@ -635,5 +1005,8 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "MultiViewPDF"
+        private const val SENTENCE_CACHE = 6
+        /** Pages of drawings to pass over before giving up on finding prose (patents have many sheets). */
+        private const val MAX_SKIP = 12
     }
 }

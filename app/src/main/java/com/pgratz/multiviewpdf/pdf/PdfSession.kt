@@ -2,6 +2,7 @@ package com.pgratz.multiviewpdf.pdf
 
 import android.graphics.Bitmap
 import com.artifex.mupdf.fitz.Document
+import com.artifex.mupdf.fitz.Link
 import com.artifex.mupdf.fitz.Matrix
 import com.artifex.mupdf.fitz.PDFAnnotation
 import com.artifex.mupdf.fitz.PDFDocument
@@ -16,10 +17,14 @@ import com.pgratz.multiviewpdf.model.AnnotType
 import com.pgratz.multiviewpdf.model.AutoCrop
 import com.pgratz.multiviewpdf.model.ColumnFinder
 import com.pgratz.multiviewpdf.model.CropMargins
+import com.pgratz.multiviewpdf.model.LinkInfo
 import com.pgratz.multiviewpdf.model.PPoint
 import com.pgratz.multiviewpdf.model.PQuad
 import com.pgratz.multiviewpdf.model.PRect
+import com.pgratz.multiviewpdf.model.PageText
 import com.pgratz.multiviewpdf.model.PageTransform
+import com.pgratz.multiviewpdf.model.TextBlock
+import com.pgratz.multiviewpdf.model.TextLine
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -35,6 +40,7 @@ class PdfSession private constructor(private var doc: PDFDocument, val workFile:
     val pageCount: Int = doc.countPages()
 
     private val bounds = HashMap<Int, PRect>()
+    private val links = HashMap<Int, List<LinkInfo>>()
 
     private val pages = object : LinkedHashMap<Int, PDFPage>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, PDFPage>): Boolean =
@@ -79,6 +85,52 @@ class PdfSession private constructor(private var doc: PDFDocument, val workFile:
     /** Text-selection quads between two page points (empty if there's no text there). */
     suspend fun highlightQuads(i: Int, a: PPoint, b: PPoint): List<PQuad> = withContext(dispatcher) {
         text(i).highlight(Point(a.x, a.y), Point(b.x, b.y)).orEmpty().map { it.toPQuad() }
+    }
+
+    /** The page's link annotations; internal ones carry their resolved target page. */
+    suspend fun links(i: Int): List<LinkInfo> = withContext(dispatcher) {
+        links.getOrPut(i) {
+            page(i).links.orEmpty().mapNotNull { link ->
+                try {
+                    val rect = link.bounds.toPRect()
+                    val uri = link.uri.orEmpty()
+                    if (link.isExternal) {
+                        if (uri.isBlank()) null else LinkInfo(rect, uri, null)
+                    } else {
+                        val target = doc.pageNumberFromLocation(doc.resolveLink(link))
+                        if (target < 0) null else LinkInfo(rect, uri, target)
+                    }
+                } catch (e: Exception) {
+                    null
+                } finally {
+                    link.destroy()
+                }
+            }
+        }
+    }
+
+    /**
+     * The page's text layer as plain Kotlin lines with per-character quads, in MuPDF's
+     * reading order. Sentence splitting for read-aloud works on this off the MuPDF thread.
+     */
+    suspend fun pageText(i: Int): PageText = withContext(dispatcher) {
+        val blocks = text(i).blocks.orEmpty().mapNotNull { b ->
+            val lines = b.lines.orEmpty().mapNotNull { l ->
+                val chars = l.chars.orEmpty()
+                if (chars.isEmpty()) return@mapNotNull null
+                val sb = StringBuilder(chars.size)
+                val quads = ArrayList<PQuad>(chars.size)
+                for (ch in chars) {
+                    val c = ch.c
+                    // One Kotlin char per MuPDF codepoint keeps text and quads aligned.
+                    sb.append(if (c in 0..0xD7FF || c in 0xE000..0xFFFF) c.toChar() else '\uFFFD')
+                    quads += ch.quad.toPQuad()
+                }
+                TextLine(sb.toString(), quads)
+            }
+            if (lines.isEmpty()) null else TextBlock(lines)
+        }
+        PageText(blocks)
     }
 
     suspend fun hasText(i: Int): Boolean = withContext(dispatcher) {

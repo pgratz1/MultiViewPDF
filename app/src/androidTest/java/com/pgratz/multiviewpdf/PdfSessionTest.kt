@@ -4,10 +4,16 @@ import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.artifex.mupdf.fitz.Document
+import com.artifex.mupdf.fitz.PDFDocument
+import com.artifex.mupdf.fitz.PDFPage
+import com.artifex.mupdf.fitz.Rect
 import com.pgratz.multiviewpdf.model.AnnotType
 import com.pgratz.multiviewpdf.model.PPoint
 import com.pgratz.multiviewpdf.model.PRect
 import com.pgratz.multiviewpdf.model.PageTransform
+import com.pgratz.multiviewpdf.model.SentenceSplitter
+import com.pgratz.multiviewpdf.model.hitTest
 import com.pgratz.multiviewpdf.pdf.PdfSession
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -80,6 +86,39 @@ class PdfSessionTest {
         assertEquals(listOf(AnnotType.NOTE), after.map { it.type })
         assertEquals("edited", after.single().contents)
         reopened.close()
+    }
+
+    @Test
+    fun linksAndPageTextAreExtracted() = runBlocking {
+        val src = samplePdf()
+        val file = File(ctx.cacheDir, "links-${System.nanoTime()}.pdf")
+        // Add one web link and one link to page 2 with raw MuPDF.
+        val doc = Document.openDocument(src.absolutePath) as PDFDocument
+        val p0 = doc.loadPage(0) as PDFPage
+        p0.createLink(Rect(72f, 80f, 300f, 110f), "https://example.com/x")
+        p0.createLinkFit(Rect(72f, 380f, 150f, 410f), 1)
+        doc.save(file.absolutePath, "")
+        p0.destroy()
+        doc.destroy()
+
+        val s = PdfSession.open(file)
+        val links = s.links(0)
+        assertEquals(2, links.size)
+        val web = links.first { it.isExternal }
+        assertEquals("https://example.com/x", web.uri)
+        val internal = links.first { !it.isExternal }
+        assertEquals(1, internal.page)
+        assertEquals("Page 2", internal.label)
+        assertEquals(web, links.hitTest(PPoint(100f, 95f), 0f))
+        assertTrue(s.links(1).isEmpty())
+
+        val text = s.pageText(0)
+        val claim = text.blocks.flatMap { it.lines }.first { it.text.contains("Claim 1 recites") }
+        assertTrue(claim.bounds.contains(PPoint(140f, 95f)))
+        val sentences = SentenceSplitter.split(text)
+        assertTrue("FIG. 1 must stay one sentence: $sentences", sentences.any { it.text == "FIG. 1" })
+        assertEquals(1, sentences.first { it.text.startsWith("Claim 1") }.quads.size)
+        s.close()
     }
 
     @Test
