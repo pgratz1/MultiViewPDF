@@ -13,4 +13,4 @@ captures/
 
 # Confidential sample paper and the text-layer dumps RealPagesLayoutTest makes from it (local only).
 *.pdf
-app/src/test/resources/layout/isca_*.txt
+app/src/test/resources/layout/*.txt

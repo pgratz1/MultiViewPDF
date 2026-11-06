@@ -100,7 +100,7 @@ class LayoutTest {
         val l = Layout.analyze(1, PageText(listOf(title, submission, abstractH, abstractB, copyright, cap1, bodyR)), page)
         assertEquals(BlockClass.HEADING, l.cls(title))
         assertEquals(BlockClass.HEADING, l.cls(submission))
-        assertEquals(BlockClass.HEADING, l.cls(abstractH))
+        assertEquals(BlockClass.LABEL, l.cls(abstractH)) // a bare heading: read, but not a figure boundary
         assertEquals(BlockClass.SMALL_PRINT, l.cls(copyright))
         assertEquals(listOf(title, submission, abstractH, abstractB, bodyR), l.readable())
         val f1 = l.captions.single()
@@ -185,6 +185,99 @@ class LayoutTest {
         assertEquals(BlockClass.BODY, l.cls(bodyL))
         assertEquals(capB.bounds.y1, f2.bounds.y1, 0.01f)
         assertEquals(listOf(bodyL, bodyR), l.readable())
+    }
+
+    // ---- IEEE conventions (MICRO / ISCA proceedings): "Figure 6." alone on a line, "Table I",
+    // diagram labels at large font sizes, algorithm listings, a rotated side banner.
+
+    @Test fun ieeeDiagramLabelsAreNotHeadings() {
+        // Page 7 of the Page Size paper: a block diagram with 9–18 pt labels above a full-width caption.
+        val l2c = blk(403f, 82f, 11.9f, listOf("L2C"))
+        val pref = blk(97f, 108f, 11.6f, listOf("L2C Prefetcher", "L1D"))
+        val bits = blk(171f, 76f, 8.9f, listOf("page size", "bit", "L1D MSHR"))
+        val big = blk(293f, 103f, 17.9f, listOf(".", "Pref-PSA"))
+        val stop = blk(401f, 125f, 7.1f, listOf("Stop @ 4KB Boundaries"))
+        val cap6 = blk(224f, 167f, 8f, listOf("Figure 6.", "Page-size Propagation Module (PPM)."))
+        val bodyL = body(54f, 200f, 21, 10f)
+        val heading = blk(54f, 559f, 10f, listOf("D. Putting Everything Together"))
+        val bodyL2 = body(54f, 579f, 12, 10f)
+        val bodyR = body(315f, 200f, 16, 10f)
+        val l = Layout.analyze(6, PageText(listOf(l2c, pref, bits, big, stop, cap6, bodyL, heading, bodyL2, bodyR)), page)
+        for (b in listOf(l2c, pref, bits, big, stop)) assertEquals(b.lines[0].text, BlockClass.IN_FIGURE, l.cls(b))
+        val f6 = l.captions.single()
+        assertEquals(6, f6.number)
+        assertEquals("Figure 6. Page-size Propagation Module (PPM).", f6.text)
+        assertEquals(792f * Layout.HEADER_BAND, f6.region.y0, 0.01f)
+        assertEquals(167f, f6.region.y1, 0.01f)
+        assertEquals(BlockClass.HEADING, l.cls(heading))
+        assertEquals(listOf(bodyL, heading, bodyL2, bodyR), l.readable())
+    }
+
+    @Test fun ieeeRomanTableCaptionBelowRows() {
+        val rows = (0 until 9).map { k -> blk(315f, 75f + k * 17f, 8f, listOf("L1 DCache", "48KB, 12-way, 5-cycle, 16-entry MSHR")) }
+        val capT = blk(392f, 265f, 8f, listOf("Table I", "SYSTEM CONFIGURATION."))
+        val bodyR = body(315f, 319f, 21, 10f)
+        val method = blk(395f, 581f, 9f, listOf("V. METHODOLOGY"))
+        val bodyL = body(54f, 77f, 50, 10f)
+        val l = Layout.analyze(8, PageText(listOf(bodyL) + rows + listOf(capT, bodyR, method)), page)
+        val t1 = l.captions.single()
+        assertEquals(FigureKind.TABLE, t1.kind)
+        assertEquals(1, t1.number)
+        assertEquals("Table I SYSTEM CONFIGURATION.", t1.text)
+        assertTrue(rows.all { l.cls(it) == BlockClass.IN_FIGURE })
+        assertEquals(265f, t1.region.y1, 0.01f)
+        assertEquals(BlockClass.HEADING, l.cls(method))
+        assertEquals(listOf(bodyL, bodyR, method), l.readable())
+    }
+
+    @Test fun algorithmListingIsOneBlockBelowItsTitle() {
+        val title = blk(65f, 76f, 9.4f, listOf("Algorithm 1: Setup Memory Access List For Each Set"))
+        val input = blk(69f, 89f, 9.4f, listOf("Input: mem: list of (address, timestamp) pairs of", "length x; w, y: number of cache sets and ways"))
+        val lines = (0 until 12).map { k -> blk(62f, 122f + k * 12f, 9.4f, listOf("${k + 1}", "if mem[i] belongs to cache set s then")) }
+        val para = body(60f, 300f, 11, 9.4f)
+        val bodyR = body(314f, 76f, 50, 9.4f)
+        val l = Layout.analyze(5, PageText(listOf(title, input) + lines + listOf(para, bodyR)), page)
+        val a1 = l.captions.single()
+        assertEquals(FigureKind.ALGORITHM, a1.kind)
+        assertEquals(1, a1.number)
+        assertEquals(title.bounds.y1, a1.region.y0, 0.01f)
+        assertEquals(300f, a1.region.y1, 0.01f)
+        assertEquals(BlockClass.IN_FIGURE, l.cls(input))
+        assertTrue(lines.all { l.cls(it) == BlockClass.IN_FIGURE })
+        assertEquals(listOf(para, bodyR), l.readable())
+    }
+
+    @Test fun rotatedSideBannerAndShortHeadingsOutsideFigures() {
+        val bannerText = "2026 ACM/IEEE 53rd Annual International Symposium on Computer Architecture (ISCA)"
+        val banner = TextBlock(listOf(TextLine(bannerText, bannerText.indices.map { i -> PQuad.of(PRect(11f, 174f + i * 7f, 18f, 181f + i * 7f)) })))
+        val abstractH = blk(54f, 149f, 10.9f, listOf("Abstract"))
+        val bodyL = body(53f, 165f, 40, 9.4f)
+        val bodyR = body(314f, 100f, 50, 9.4f)
+        val l = Layout.analyze(0, PageText(listOf(banner, abstractH, bodyL, bodyR)), page)
+        assertEquals(BlockClass.SMALL_PRINT, l.cls(banner))
+        assertEquals(BlockClass.LABEL, l.cls(abstractH))
+        assertEquals(listOf(abstractH, bodyL, bodyR), l.readable())
+    }
+
+    @Test fun paragraphStartingWithFigureNumberIsNotACaption() {
+        val para = blk(53f, 100f, 9f, listOf("Figure 4. We further break down their speedup across workloads and", "find that the gains concentrate in the memory-bound half of the suite,", "which is where the mitigation overhead is largest.", "More lines follow here.", "And here."))
+        val bodyR = body(318f, 100f, 40)
+        val l = Layout.analyze(0, PageText(listOf(para, bodyR)), page)
+        assertTrue(l.captions.isEmpty())
+        assertEquals(BlockClass.BODY, l.cls(para))
+    }
+
+    @Test fun listingStepsAreNotHeadings() {
+        val step = blk(62f, 133f, 9.4f, listOf("2", "Acc = <empty list>;"))
+        val step2 = blk(60f, 446f, 9.4f, listOf("21", "Find l in set with the largest timestamp;"))
+        val heading = blk(54f, 498f, 10.9f, listOf("1", "Introduction"))
+        val heading2 = blk(318f, 284f, 10.9f, listOf("2.4", "Hardware Prefetching"))
+        val bodyL = body(53f, 520f, 20)
+        val bodyR = body(318f, 300f, 30)
+        val l = Layout.analyze(0, PageText(listOf(step, step2, heading, heading2, bodyL, bodyR)), page)
+        assertEquals(BlockClass.HEADING, l.cls(heading))
+        assertEquals(BlockClass.HEADING, l.cls(heading2))
+        assertTrue(l.cls(step) != BlockClass.HEADING && l.cls(step2) != BlockClass.HEADING)
     }
 
     @Test fun pageWithoutCaptionsReadsEverythingButNumbers() {

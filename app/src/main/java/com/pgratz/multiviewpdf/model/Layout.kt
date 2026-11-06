@@ -7,13 +7,31 @@ import kotlin.math.max
 import kotlin.math.min
 
 enum class BlockClass {
-    BODY, HEADING, CAPTION, SUB_CAPTION, FOOTNOTE, SMALL_PRINT, HEADER_FOOTER, NUMERIC, IN_FIGURE, EMPTY;
+    BODY, HEADING, CAPTION, SUB_CAPTION, FOOTNOTE, SMALL_PRINT, HEADER_FOOTER, NUMERIC, IN_FIGURE, EMPTY,
+    /** A few words at any size: a diagram label inside a figure, or a bare heading ("Abstract") outside one. */
+    LABEL;
 
-    /** Read aloud in place. Sub-captions only when they sit outside every figure region. */
-    val isReadable: Boolean get() = this == BODY || this == HEADING || this == FOOTNOTE || this == SUB_CAPTION
+    /** Read aloud in place. Labels and sub-captions only when they sit outside every figure region. */
+    val isReadable: Boolean get() = this == BODY || this == HEADING || this == FOOTNOTE || this == SUB_CAPTION || this == LABEL
 }
 
-enum class FigureKind(val label: String) { FIGURE("Figure"), TABLE("Table") }
+enum class FigureKind(val label: String) { FIGURE("Figure"), TABLE("Table"), ALGORITHM("Algorithm") }
+
+/** "IV" → 4; null when [s] is not a well-formed roman numeral. */
+fun romanToInt(s: String): Int? {
+    if (s.isEmpty() || !Regex("""M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})""").matches(s)) return null
+    val v = mapOf('I' to 1, 'V' to 5, 'X' to 10, 'L' to 50, 'C' to 100, 'D' to 500, 'M' to 1000)
+    var total = 0
+    for (i in s.indices) {
+        val a = v[s[i]] ?: return null
+        val b = if (i + 1 < s.length) v[s[i + 1]] ?: return null else 0
+        total += if (a < b) -a else a
+    }
+    return total
+}
+
+/** Parses the number of a caption or reference: digits ("3", "2b" → 2) or a roman numeral ("IV"). */
+fun figureNumber(token: String): Int? = token.trimEnd { it.isLowerCase() }.toIntOrNull() ?: romanToInt(token)
 
 data class ClassifiedBlock(
     val block: TextBlock,
@@ -83,16 +101,42 @@ object Layout {
     const val MIN_REGION_HEIGHT = 15f
     const val TALL_REGION_HEIGHT = 40f
 
-    /** "Figure 3:", "Fig. 3.", "Table 1 –", "FIG. 2b:" at the start of a block. */
-    val CAPTION = Regex("""^(Figure|Fig\.|FIGURE|FIG\.|Table|TABLE)\s*(\d{1,3})[a-z]?\s*[:.|–—\-]""")
+    /**
+     * "Figure 3:", "Fig. 3.", "Table 1 –", "FIG. 2b:", "TABLE I", "Algorithm 1:" at the start
+     * of a block. IEEE puts "Figure 2." or "TABLE I" alone on the first line, so the end of
+     * the line counts as a separator too.
+     */
+    val CAPTION = Regex("""^(Figure|Fig\.|FIGURE|FIG\.|Table|TABLE|Algorithm|ALGORITHM|Listing)\s*(\d{1,3}[a-z]?|[IVXLC]{1,7})\s*([:.|–—\-]|$)""")
 
     /** The caption punctuation prose never uses; keeps caption-like sentences out of the reader. */
-    val CAPTION_STRICT = Regex("""^(Figure|Fig\.|FIGURE|FIG\.|Table|TABLE)\s*\d{1,3}[a-z]?\s*[:|]""")
+    val CAPTION_STRICT = Regex("""^(Figure|Fig\.|FIGURE|FIG\.|Table|TABLE|Algorithm|ALGORITHM|Listing)\s*(\d{1,3}[a-z]?|[IVXLC]{1,7})\s*[:|]""")
 
     private val NUMERIC = Regex("""[\d.,%−–\-\s]+""")
     private val SUB_CAPTION = Regex("""^\([a-z]\)\s""")
     private val FOOTNOTE_MARK = Regex("""^(\d{1,2}|[*†‡§¶])\s*\S""")
     private val BIB_ENTRY = Regex("""^\[\d{1,3}\]\s""")
+    /** "2.4 Hardware Prefetching", "IV. DESIGN", "A. Methodology", "1) Design of …" (number, then the title). */
+    private val NUMBERED_HEADING = Regex("""^(\d+(\.\d+)*|[IVXLC]{1,6}|[A-Z])[.)]?\s+([A-Z(].*)$""")
+    private val CODE_CHARS = Regex("""[=;<>{}\[\]/\\|]""")
+    private val LISTING_START = Regex("""^(\d{1,3}(\s|$)|(Input|Output|Require|Ensure|Data|Result)\s*:)""")
+
+    /**
+     * A section heading, not a numbered listing step ("2 Acc = <empty list>;"): the title has
+     * no code punctuation and its longer words are mostly capitalised.
+     */
+    private fun isNumberedHeading(text: String): Boolean {
+        val m = NUMBERED_HEADING.find(text) ?: return false
+        val title = m.groupValues[3]
+        if (CODE_CHARS.containsMatchIn(title)) return false
+        val long = title.split(Regex("""\s+""")).filter { it.length >= 4 && it[0].isLetter() }
+        if (long.isEmpty()) return true
+        return long.count { it[0].isUpperCase() } >= 0.6f * long.size
+    }
+    /** Words in a block before it counts as a paragraph when it has fewer than three lines. */
+    private const val PARAGRAPH_WORDS = 25
+    /** Words in a one- or two-line block before it still bounds a figure region (a short paragraph). */
+    private const val PROSE_FRAGMENT_WORDS = 12
+    private const val LABEL_WORDS = 5
     private val BOILERPLATE = Regex(
         """ACM ISBN|\bdoi[:.]|doi\.org|©|Permission to make|licensed under|Copyright|^\s*\[\d+\]""",
         setOf(RegexOption.MULTILINE, RegexOption.IGNORE_CASE),
@@ -117,15 +161,16 @@ object Layout {
         val body = if (bodySizeHint != null && estimate < SMALL_PRINT_RATIO * bodySizeHint) bodySizeHint else estimate
         for (m in ms) m.cls = classify(m, body, pageBounds, headerBottom, footerTop)
 
-        val caps = mergeCaptions(ms)
+        val caps = mergeCaptions(ms, body)
         val columns = columns(ms)
         for (cap in caps) {
             cap.column = columnFor(cap.bounds, columns)
             cap.region = region(cap, ms, images, headerBottom, footerTop)
         }
-        // Everything that isn't prose and sits inside a figure belongs to the figure.
+        // Everything that isn't a paragraph, heading or caption and sits inside a figure belongs to it.
         for (m in ms) {
-            if (m.cls == BlockClass.BODY || m.cls == BlockClass.HEADING || m.cls == BlockClass.CAPTION || m.cls == BlockClass.EMPTY) continue
+            if (m.cls == BlockClass.CAPTION || m.cls == BlockClass.EMPTY || m.cls == BlockClass.HEADING) continue
+            if (m.cls == BlockClass.BODY && m.isParagraph) continue
             val c = m.bounds.center
             val owner = caps.firstOrNull { it.region.contains(c) } ?: continue
             if (m.cls == BlockClass.SUB_CAPTION) owner.subCaptions += m
@@ -158,7 +203,19 @@ object Layout {
             val heights = block.lines.flatMap { l -> l.quads.map { it.bounds.height } }.filter { it > 0f }.sorted()
             if (heights.isEmpty()) 0f else heights[heights.size / 2]
         }
-        val wordsPerLine: Float = if (lines.isEmpty()) 0f else lines.sumOf { it.split(Regex("\\s+")).size }.toFloat() / lines.size
+        val words: Int = lines.sumOf { it.split(Regex("\\s+")).size }
+        val wordsPerLine: Float = if (lines.isEmpty()) 0f else words.toFloat() / lines.size
+        /** Running text: three or more lines, or a long one- or two-liner. */
+        val isParagraph: Boolean get() = lines.size >= 3 || words >= PARAGRAPH_WORDS
+        /** A one- or two-line sentence (bounds a figure region; a listing line doesn't). */
+        val isProseFragment: Boolean get() = lines.size <= 2 && words >= PROSE_FRAGMENT_WORDS
+        /** A pseudo-code line: step number, Input/Output, trailing ';' or code punctuation. */
+        val isListingLine: Boolean get() {
+            val first = lines.first()
+            return LISTING_START.containsMatchIn(first) || text.trimEnd().endsWith(";") || CODE_CHARS.containsMatchIn(text)
+        }
+        /** Single rotated line (a side banner, a y-axis label). */
+        val isRotated: Boolean get() = lines.size == 1 && bounds.height > 4f * bounds.width && lines[0].length > 3
         var cls: BlockClass = BlockClass.BODY
         val text: String get() = lines.joinToString("\n")
     }
@@ -189,34 +246,55 @@ object Layout {
     private fun classify(m: Measured, body: Float, pageBounds: PRect, headerBottom: Float, footerTop: Float): BlockClass {
         if (m.lines.isEmpty() || m.size <= 0f) return BlockClass.EMPTY
         if (m.lines.all { NUMERIC.matches(it) }) return BlockClass.NUMERIC
-        if (CAPTION.containsMatchIn(m.lines.first())) return BlockClass.CAPTION
+        if (m.isRotated) return BlockClass.SMALL_PRINT
+        val cap = CAPTION.find(m.lines.first())
+        if (cap != null && figureNumber(cap.groupValues[2]) != null) {
+            // "Figure 2. We further…" can open a paragraph; real captions are at most body size,
+            // or short. The ':' / '|' forms are never prose.
+            val strict = CAPTION_STRICT.containsMatchIn(m.lines.first())
+            if (strict || m.size < 0.97f * body || m.lines.size <= 4) return BlockClass.CAPTION
+        }
         val bib = m.lines.count { BIB_ENTRY.containsMatchIn(it) }
         if (bib >= 2 || (bib >= 1 && m.lines.size <= 3)) return BlockClass.SMALL_PRINT // bibliography
         val fewLines = m.lines.size <= 2
         if (fewLines && m.size < 1.3f * body && (m.bounds.y1 <= headerBottom || m.bounds.y0 >= footerTop)) return BlockClass.HEADER_FOOTER
-        if (fewLines && m.size >= HEADING_RATIO * body) return BlockClass.HEADING
+        // "2.4" may sit alone on the first line with the title on the second.
+        if (m.lines.size <= 3 && m.words <= 12 && m.size >= SMALL_PRINT_RATIO * body &&
+            isNumberedHeading(m.lines.joinToString(" "))
+        ) return BlockClass.HEADING
+        if (m.lines.size <= 3 && m.size >= HEADING_RATIO * body && m.words >= 6) return BlockClass.HEADING // a title
         if (m.size < SMALL_PRINT_RATIO * body) {
             val lowerHalf = m.bounds.y0 >= pageBounds.y0 + pageBounds.height / 2
             val prose = m.wordsPerLine >= 5f && (m.lines.size >= 2 || FOOTNOTE_MARK.containsMatchIn(m.lines.first()))
             return if (lowerHalf && prose && !BOILERPLATE.containsMatchIn(m.text)) BlockClass.FOOTNOTE else BlockClass.SMALL_PRINT
         }
         if (m.lines.size <= 4 && SUB_CAPTION.containsMatchIn(m.lines.first())) return BlockClass.SUB_CAPTION
+        if (m.lines.size <= 3 && m.words <= LABEL_WORDS) return BlockClass.LABEL
         return BlockClass.BODY
     }
 
     /** Captions split across blocks: absorb the block that continues right below at the same size. */
-    private fun mergeCaptions(ms: List<Measured>): List<Cap> {
+    private fun mergeCaptions(ms: List<Measured>, body: Float): List<Cap> {
         val caps = ms.filter { it.cls == BlockClass.CAPTION }.mapNotNull { m ->
             val match = CAPTION.find(m.lines.first()) ?: return@mapNotNull null
-            val kind = if (match.groupValues[1].startsWith("T", ignoreCase = true)) FigureKind.TABLE else FigureKind.FIGURE
-            Cap(m, kind, match.groupValues[2].toInt())
+            val number = figureNumber(match.groupValues[2]) ?: return@mapNotNull null
+            val kind = when (match.groupValues[1].first().uppercaseChar()) {
+                'T' -> FigureKind.TABLE
+                'A', 'L' -> FigureKind.ALGORITHM
+                else -> FigureKind.FIGURE
+            }
+            Cap(m, kind, number)
         }
         val taken: MutableSet<Measured> = Collections.newSetFromMap(IdentityHashMap())
         caps.forEach { taken += it.primary }
         val byTop = ms.sortedBy { it.bounds.y0 }
         for (cap in caps) {
+            if (cap.kind == FigureKind.ALGORITHM) continue // a one-line title; the listing below is not caption text
             var last = cap.primary
             while (true) {
+                // Only an unfinished caption ("…archi-", "…and") continues in the next block.
+                val tail = last.lines.last().trimEnd()
+                if (tail.isEmpty() || tail.last() in ".!?)]\"”") break
                 val pitch = last.size * 1.3f
                 val next = byTop.firstOrNull { n ->
                     n !in taken && n.cls != BlockClass.CAPTION && n.cls != BlockClass.HEADING && n.cls != BlockClass.NUMERIC &&
@@ -269,9 +347,14 @@ object Layout {
         val col = cap.column
         val capBounds = cap.bounds
         val own: Set<Measured> = Collections.newSetFromMap<Measured>(IdentityHashMap()).apply { addAll(cap.parts) }
+        // Prose bounds the gap; labels and listing lines don't. Algorithm listings are made of
+        // one- and two-line fragments, so only real paragraphs bound those.
         val boundaries = ms.filter {
-            it !in own && (it.cls == BlockClass.BODY || it.cls == BlockClass.HEADING || it.cls == BlockClass.CAPTION) &&
-                it.bounds.overlapsX(col)
+            it !in own && it.bounds.overlapsX(col) && when (it.cls) {
+                BlockClass.HEADING, BlockClass.CAPTION -> true
+                BlockClass.BODY -> it.isParagraph || (it.isProseFragment && (cap.kind != FigureKind.ALGORITHM || !it.isListingLine))
+                else -> false
+            }
         }
         val topLimit = boundaries.filter { it.bounds.y1 <= capBounds.y0 + 2f }.maxOfOrNull { it.bounds.y1 } ?: headerBottom
         val bottomLimit = boundaries.filter { it.bounds.y0 >= capBounds.y1 - 2f }.minOfOrNull { it.bounds.y0 } ?: footerTop
@@ -283,8 +366,9 @@ object Layout {
             var s = 0
             for (m in ms) {
                 if (m in own) continue
-                val filler = m.cls == BlockClass.SMALL_PRINT || m.cls == BlockClass.NUMERIC ||
-                    m.cls == BlockClass.SUB_CAPTION || m.cls == BlockClass.FOOTNOTE || m.cls == BlockClass.IN_FIGURE
+                val filler = m.cls == BlockClass.SMALL_PRINT || m.cls == BlockClass.NUMERIC || m.cls == BlockClass.LABEL ||
+                    m.cls == BlockClass.SUB_CAPTION || m.cls == BlockClass.FOOTNOTE || m.cls == BlockClass.IN_FIGURE ||
+                    (m.cls == BlockClass.BODY && !m.isParagraph)
                 if (filler && r.contains(m.bounds.center)) s += 2
             }
             for (img in images) {
@@ -297,11 +381,12 @@ object Layout {
 
         val sa = score(above)
         val sb = score(below)
+        val prefersBelow = cap.kind != FigureKind.FIGURE // tables and algorithms are usually titled above
         var chosen = when {
-            sa == Int.MIN_VALUE && sb == Int.MIN_VALUE -> if (cap.kind == FigureKind.TABLE) below else above
+            sa == Int.MIN_VALUE && sb == Int.MIN_VALUE -> if (prefersBelow) below else above
             sa > sb -> above
             sb > sa -> below
-            cap.kind == FigureKind.TABLE -> below
+            prefersBelow -> below
             else -> above
         }
         // Images that mostly fall inside the chosen side extend it (clamped to the column and the limits).

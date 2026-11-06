@@ -13,8 +13,8 @@ data class Figure(val key: FigureKey, val page: Int, val caption: Caption)
 
 /** Finds figure/table references in running text. */
 object FigureRefs {
-    private val HEAD = Regex("""(?<![A-Za-z])(Figures?|Figs?\.|FIGS?\.|FIGURES?|Tables?|TABLES?)\s*~?(\d{1,3})[a-z]?""")
-    private val TAIL = Regex("""^\s*(?:(–|—|-|to|through)|(,|and|&|,\s*and))\s*(\d{1,3})[a-z]?""")
+    private val HEAD = Regex("""(?<![A-Za-z])(Figures?|Figs?\.|FIGS?\.|FIGURES?|Tables?|TABLES?|Algorithms?|Algs?\.|Listings?)\s*~?(\d{1,3}[a-z]?|[IVXLC]{1,7})(?![A-Za-z0-9])""")
+    private val TAIL = Regex("""^\s*(?:(–|—|-|to|through)|(,|and|&|,\s*and))\s*(\d{1,3}[a-z]?|[IVXLC]{1,7})(?![A-Za-z0-9])""")
     private const val MAX_RANGE = 10
 
     /** Keys in order of appearance, de-duplicated. Ranges ("Figs. 2–4") are expanded. */
@@ -22,13 +22,19 @@ object FigureRefs {
         val out = LinkedHashSet<FigureKey>()
         var m = HEAD.find(text)
         while (m != null) {
-            val kind = if (m.groupValues[1].startsWith("T", ignoreCase = true)) FigureKind.TABLE else FigureKind.FIGURE
-            var last = m.groupValues[2].toInt()
+            val kind = when (m.groupValues[1].first().uppercaseChar()) {
+                'T' -> FigureKind.TABLE
+                'A', 'L' -> FigureKind.ALGORITHM
+                else -> FigureKind.FIGURE
+            }
+            val first = figureNumber(m.groupValues[2])
+            if (first == null) { m = HEAD.find(text, m.range.last + 1); continue }
+            var last: Int = first
             out += FigureKey(kind, last)
             var pos = m.range.last + 1
             while (true) {
                 val t = TAIL.find(text.substring(pos)) ?: break
-                val n = t.groupValues[3].toInt()
+                val n = figureNumber(t.groupValues[3]) ?: break
                 if (t.groupValues[1].isNotEmpty()) { // a range
                     if (n > last && n - last <= MAX_RANGE) for (k in last + 1..n) out += FigureKey(kind, k)
                     else out += FigureKey(kind, n)

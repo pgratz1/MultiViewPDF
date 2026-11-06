@@ -6,7 +6,6 @@ import com.pgratz.multiviewpdf.model.Figure
 import com.pgratz.multiviewpdf.model.FigureDescription
 import com.pgratz.multiviewpdf.model.FigureDescriptions
 import com.pgratz.multiviewpdf.model.FigureMode
-import com.pgratz.multiviewpdf.model.Layout
 import com.pgratz.multiviewpdf.model.SentenceSplitter
 import com.pgratz.multiviewpdf.pdf.PrefsStore
 import kotlinx.coroutines.CoroutineScope
@@ -119,7 +118,6 @@ class FigureDescriber(
 
     companion object {
         private const val TAG = "MultiViewPDF"
-        private val CAPTION_PREFIX = Regex("""^\s*(Figure|Fig\.|FIGURE|FIG\.|Table|TABLE)\s*\d{1,3}[a-z]?\s*[:.|–—\-]\s*""")
-        init { Layout.CAPTION } // keep the regexes side by side in mind
+        private val CAPTION_PREFIX = Regex("""^\s*(Figure|Fig\.|FIGURE|FIG\.|Table|TABLE|Algorithm|ALGORITHM|Listing)\s*(\d{1,3}[a-z]?|[IVXLC]{1,7})\s*[:.|–—\-]?\s*""")
     }
 }

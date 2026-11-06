@@ -27,6 +27,15 @@ class FigureRefsTest {
         assertEquals(f(6, 8) + t(2), FigureRefs.find("Figure 6 and Figure 8, plus Table 2."))
     }
 
+    @Test fun romanNumeralsAndAlgorithms() {
+        assertEquals(t(1), FigureRefs.find("Table I shows how this extension works."))
+        assertEquals(t(2, 4), FigureRefs.find("accesses shown in Table II are shown in Table IV, generated"))
+        assertEquals(listOf(FigureKey(FigureKind.ALGORITHM, 1)), FigureRefs.find("applying Alg. 1 to a memory stream"))
+        assertEquals(listOf(FigureKey(FigureKind.ALGORITHM, 4)), FigureRefs.find("Algorithm 4 shows how R-Max handles reordering."))
+        assertEquals(f(2), FigureRefs.find("Fig. 2 shows a high level overview."))
+        assertEquals(emptyList<FigureKey>(), FigureRefs.find("Table Isolation is not a thing")) // "Is" is not a numeral
+    }
+
     @Test fun noFalsePositives() {
         assertEquals(emptyList<FigureKey>(), FigureRefs.find("Section 3 describes the design."))
         assertEquals(emptyList<FigureKey>(), FigureRefs.find("We configure 3 prefetchers per core."))

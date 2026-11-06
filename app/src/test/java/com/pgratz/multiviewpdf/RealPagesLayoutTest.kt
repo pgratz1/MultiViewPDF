@@ -45,8 +45,15 @@ class RealPagesLayoutTest {
                     val (x0, y0, x1, _, size) = l.substring(0, bar).split(' ').map { it.toFloat() }
                     val text = l.substring(bar + 1)
                     if (text.isEmpty()) continue
-                    val cw = (x1 - x0) / text.length
-                    cur += TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0 + i * cw, y0, x0 + (i + 1) * cw, y0 + size)) })
+                    val y1 = l.substring(0, bar).split(' ')[3].toFloat()
+                    cur += if (y1 - y0 > 4f * (x1 - x0)) {
+                        // Rotated line (side banner, y-axis label): lay the chars out vertically.
+                        val ch = (y1 - y0) / text.length
+                        TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0, y0 + i * ch, x1, y0 + (i + 1) * ch)) })
+                    } else {
+                        val cw = (x1 - x0) / text.length
+                        TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0 + i * cw, y0, x0 + (i + 1) * cw, y0 + size)) })
+                    }
                 }
             }
         }
@@ -63,6 +70,15 @@ class RealPagesLayoutTest {
     private fun PageLayout.readableTexts() = blocks.filter { it.cls.isReadable }.map { firstLineOf(it.block) }
     private fun PageLayout.classOfBlockStarting(prefix: String) =
         blocks.first { firstLineOf(it.block).startsWith(prefix) }.cls
+
+    /** Class of the first block any of whose lines starts with [prefix] (listing steps put the number on its own line). */
+    private fun PageLayout.classOfBlockWithLine(prefix: String) =
+        blocks.first { b -> b.block.lines.any { it.text.trim().startsWith(prefix) } }.cls
+
+    /** Every block's class, size and first line: for assertion messages. */
+    private fun PageLayout.describe() = blocks.joinToString("\n") { b ->
+        "${b.cls} sz=${"%.1f".format(b.fontSize)} n=${b.lineCount} [${b.bounds.x0.toInt()},${b.bounds.y0.toInt()}] ${firstLineOf(b.block).take(50)}"
+    }
 
     @Test fun page3SkipsHeaderSubCaptionsAndFigures() {
         val (l, _) = analyze("isca_p3", 2)
@@ -94,7 +110,7 @@ class RealPagesLayoutTest {
     @Test fun page1KeepsTitleAndAbstractDropsCopyright() {
         val (l, _) = analyze("isca_p1", 0)
         assertEquals(BlockClass.HEADING, l.classOfBlockStarting("Optimizing Hardware Prefetchers"))
-        assertEquals(BlockClass.HEADING, l.classOfBlockStarting("Abstract"))
+        assertEquals(BlockClass.LABEL, l.classOfBlockStarting("Abstract"))
         assertEquals(BlockClass.SMALL_PRINT, l.classOfBlockStarting("ISCA ’27, Atlanta"))
         assertEquals(listOf(1), l.captions.map { it.number })
         assertTrue(l.readableTexts().any { it.startsWith("Hardware prefetchers and Rowhammer") })
@@ -128,6 +144,90 @@ class RealPagesLayoutTest {
         assertTrue("expected a full-width caption on page 11", wide.isNotEmpty())
         assertTrue(l.readableTexts().isNotEmpty())
         assertTrue(l.blocks.filter { it.cls.isReadable }.all { it.fontSize >= 0.85f * l.bodySize })
+    }
+
+    // ---- IEEE proceedings: Page Size Aware Cache Prefetching (MICRO 2022) and R-Max (ISCA 2026)
+
+    @Test fun microViolinPlotPageSkipsChartText() {
+        val (l, text) = analyze("micro_p2", 1)
+        assertEquals(listOf(2), l.captions.map { it.number })
+        val f2 = l.captions.single()
+        assertTrue(f2.text.startsWith("Figure 2. Probability distribution"))
+        assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("SPP"))
+        assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("Probability"))
+        assertEquals(BlockClass.HEADER_FOOTER, l.classOfBlockStarting("Authorized licensed use"))
+        val sentences = SentenceSplitter.split(text, l::isReadable)
+        assertTrue(sentences.none { it.text.contains("Authorized licensed") })
+        assertEquals("Previously proposed spatial cache prefetchers operating", l.readableTexts().first())
+    }
+
+    @Test fun microBlockDiagramLabelsAreSwallowedByFigure6() {
+        val (l, _) = analyze("micro_p7", 6)
+        assertEquals(listOf(6), l.captions.map { it.number })
+        for (p in listOf("L2C", "L2C Prefetcher", "page size", "Stop @ 4KB", "4KB?")) {
+            assertEquals(p + "\n" + l.describe(), BlockClass.IN_FIGURE, l.classOfBlockStarting(p))
+        }
+        assertEquals(BlockClass.HEADING, l.classOfBlockStarting("D. Putting Everything Together"))
+        val readable = l.readableTexts()
+        assertEquals("SPP-PSA-Magic-2MB does not suffer from aliasing in the", readable.first())
+        assertTrue(readable.none { it == "L2C" || it.startsWith("Stop @") })
+    }
+
+    @Test fun microSelectionLogicFigureAndCode() {
+        val (l, _) = analyze("micro_p8", 7)
+        assertEquals(listOf(7), l.captions.map { it.number })
+        assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("if ( current_set"))
+        assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("Selection Logic"))
+        assertEquals("1) Implementation and Operation: The key idea behind", l.readableTexts().first())
+    }
+
+    @Test fun microRomanTableCaptionBelowTable() {
+        val (l, _) = analyze("micro_p9", 8)
+        val t1 = l.captions.single { it.kind == FigureKind.TABLE }
+        assertEquals(1, t1.number)
+        assertTrue(t1.text.startsWith("Table I SYSTEM CONFIGURATION"))
+        assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("CPU Core"))
+        assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("DRAM"))
+        assertEquals(BlockClass.HEADING, l.classOfBlockStarting("V. METHODOLOGY"))
+        assertEquals(BlockClass.FOOTNOTE, l.classOfBlockStarting("5This is not the case"))
+        assertTrue(l.readableTexts().none { it.startsWith("L1 ") })
+    }
+
+    @Test fun rmaxFrontPageBannerAndTableWithCaptionAbove() {
+        val (p1, _) = analyze("rmax_p1", 0)
+        val banner = p1.blocks.single { it.bounds.height > 400f && it.bounds.width < 20f } // rotated side text
+        assertEquals(BlockClass.SMALL_PRINT, banner.cls)
+        assertEquals(BlockClass.HEADER_FOOTER, p1.classOfBlockStarting("2026 ACM/IEEE 53rd"))
+        assertEquals(BlockClass.HEADING, p1.classOfBlockStarting("I. INTRODUCTION"))
+        assertTrue(p1.readableTexts().none { it.startsWith("2026 ACM/IEEE") })
+        assertTrue(p1.readableTexts().any { it.startsWith("Abstract—Memory") })
+
+        val (p3, _) = analyze("rmax_p3", 2)
+        val t1 = p3.captions.single { it.kind == FigureKind.TABLE }
+        assertEquals(1, t1.number)
+        assertTrue(t1.region.y0 >= t1.bounds.y1 - 0.01f) // caption above the table
+        assertEquals(BlockClass.IN_FIGURE, p3.classOfBlockStarting("Step #"))
+        val f1 = p3.captions.single { it.kind == FigureKind.FIGURE }
+        assertEquals(1, f1.number)
+        assertEquals(BlockClass.IN_FIGURE, p3.classOfBlockStarting("Accesses A"))
+        assertEquals("cache, a no prefetch L1 data/L2/last level cache but with", p3.readableTexts().first())
+    }
+
+    @Test fun rmaxAlgorithmListingsAreSkippedUntilProse() {
+        val (p6, _) = analyze("rmax_p6", 5)
+        assertEquals(setOf(1, 2), p6.captions.filter { it.kind == FigureKind.ALGORITHM }.map { it.number }.toSet())
+        assertEquals(p6.describe(), BlockClass.IN_FIGURE, p6.classOfBlockStarting("1 for s"))
+        assertEquals(p6.describe(), BlockClass.IN_FIGURE, p6.classOfBlockStarting("Input: mem"))
+        assertEquals(p6.describe(), BlockClass.IN_FIGURE, p6.classOfBlockWithLine("Append mem"))
+        val readable = p6.readableTexts()
+        assertEquals("the cache and thus are marked as “hold”. In either case the", readable.first())
+        assertTrue(readable.any { it.startsWith("Table II shows an example") })
+        assertEquals(BlockClass.HEADING, p6.classOfBlockStarting("D. R-Max Structures"))
+
+        val (p9, _) = analyze("rmax_p9", 8)
+        assertEquals(listOf(4), p9.captions.map { it.number })
+        assertEquals(p9.describe(), BlockClass.IN_FIGURE, p9.classOfBlockWithLine("Choose a block"))
+        assertTrue(p9.readableTexts().first().startsWith("has knowledge of the access"))
     }
 
     @Test fun referencesPagesAreSilent() {
