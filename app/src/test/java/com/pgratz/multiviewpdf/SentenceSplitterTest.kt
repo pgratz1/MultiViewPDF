@@ -98,7 +98,7 @@ class SentenceSplitterTest {
     @Test fun lineNumberGutterIsDropped() =
         assertEquals(
             listOf("Real text."),
-            texts(page(block(line("5", 0, 300f), line("10", 1, 300f), line("15", 2, 300f)), block(line("Real text.", 0)))),
+            texts(page(block(line("5", 0, 300f), line("10", 1, 300f), line("1045", 2, 300f)), block(line("Real text.", 0)))),
         )
 
     @Test fun longSentencesAreCutAtClauseBoundaries() {

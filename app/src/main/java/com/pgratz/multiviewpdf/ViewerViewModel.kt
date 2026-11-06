@@ -11,7 +11,11 @@ import androidx.lifecycle.viewModelScope
 import com.pgratz.multiviewpdf.model.AnnotInfo
 import com.pgratz.multiviewpdf.model.AnnotType
 import com.pgratz.multiviewpdf.model.AppPrefs
+import com.pgratz.multiviewpdf.model.Body
 import com.pgratz.multiviewpdf.model.CropMargins
+import com.pgratz.multiviewpdf.model.FigureKey
+import com.pgratz.multiviewpdf.model.FigureMode
+import com.pgratz.multiviewpdf.model.FigureNote
 import com.pgratz.multiviewpdf.model.FitMode
 import com.pgratz.multiviewpdf.model.HighlightColors
 import com.pgratz.multiviewpdf.model.LinkInfo
@@ -20,9 +24,11 @@ import com.pgratz.multiviewpdf.model.PPoint
 import com.pgratz.multiviewpdf.model.PQuad
 import com.pgratz.multiviewpdf.model.PRect
 import com.pgratz.multiviewpdf.model.PageTransform
+import com.pgratz.multiviewpdf.model.ReadItem
+import com.pgratz.multiviewpdf.model.ReadingPlan
+import com.pgratz.multiviewpdf.model.ReadingPlans
 import com.pgratz.multiviewpdf.model.RecentDoc
 import com.pgratz.multiviewpdf.model.Selection
-import com.pgratz.multiviewpdf.model.Sentence
 import com.pgratz.multiviewpdf.model.SentenceSplitter
 import com.pgratz.multiviewpdf.model.Tool
 import com.pgratz.multiviewpdf.model.ViewLayout
@@ -31,6 +37,10 @@ import com.pgratz.multiviewpdf.model.hitTest
 import com.pgratz.multiviewpdf.pdf.DocumentStore
 import com.pgratz.multiviewpdf.pdf.PdfSession
 import com.pgratz.multiviewpdf.pdf.PrefsStore
+import com.pgratz.multiviewpdf.tts.ClaudeResult
+import com.pgratz.multiviewpdf.tts.FigureCatalog
+import com.pgratz.multiviewpdf.tts.FigureDescriber
+import com.pgratz.multiviewpdf.tts.SdkClaudeClient
 import com.pgratz.multiviewpdf.tts.SpeechReader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +80,8 @@ data class TtsState(
     val index: Int,
     val count: Int,
     val quads: List<PQuad>,
+    /** "Figure 3" while a figure note is spoken; null for body text. */
+    val label: String? = null,
 )
 
 /** Note/comment editor. [annotIndex] null = new sticky note at [at]. */
@@ -88,6 +100,7 @@ sealed interface Dialog {
     data class SaveFailed(val reason: String) : Dialog
     data object CropEditor : Dialog
     data object Shortcuts : Dialog
+    data object ReadAloudSettings : Dialog
 }
 
 sealed interface PaneEvent {
@@ -136,10 +149,22 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     /** Bumped on every stop/seek; utterance ids carry it so stale engine callbacks are ignored. */
     private var ttsGeneration = 0
     private var ttsJob: Job? = null
-    private val sentenceCache = object : LinkedHashMap<Int, List<Sentence>>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, List<Sentence>>): Boolean =
-            size > SENTENCE_CACHE
+    private val planCache = object : LinkedHashMap<Int, ReadingPlan>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ReadingPlan>): Boolean =
+            size > PLAN_CACHE
     }
+    private var catalog: FigureCatalog? = null
+    private var figureIndexJob: Job? = null
+    /** Figures already described in this reading session (cleared by stop). */
+    private val spokenFigures = HashSet<FigureKey>()
+    private var claudeClient: SdkClaudeClient? = null
+    private val describer = FigureDescriber(
+        store = prefsStore,
+        scope = viewModelScope,
+        render = { fig -> session?.renderRegion(fig.page, fig.caption.extent) },
+        client = ::currentClaudeClient,
+        onFailure = { reason -> toast("Claude unavailable, reading captions instead ($reason)") },
+    )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -225,7 +250,11 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun closeSession() {
         stopReading()
-        sentenceCache.clear()
+        planCache.clear()
+        catalog = null
+        figureIndexJob?.cancel()
+        figureIndexJob = null
+        describer.reset()
         val s = session ?: return
         session = null
         pageLoads.clear()
@@ -635,15 +664,56 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         return r
     }
 
-    /** Sentences of [page], split off the MuPDF thread and cached; null if no document is open. */
-    private suspend fun sentences(page: Int): List<Sentence>? {
+    private fun ensureCatalog(s: PdfSession): FigureCatalog = catalog ?: FigureCatalog(s).also { catalog = it }
+
+    private fun currentClaudeClient(): SdkClaudeClient? {
+        val p = _state.value.prefs
+        val key = p.claudeApiKey.trim()
+        if (key.isEmpty()) return null
+        val c = claudeClient
+        if (c != null && c.apiKey == key && c.model == p.claudeModel) return c
+        return SdkClaudeClient(key, p.claudeModel).also { claudeClient = it }
+    }
+
+    /**
+     * The page's reading plan: readable sentences (no headers, captions or figure labels)
+     * with a figure note after each first mention. Built off the MuPDF thread and cached.
+     */
+    private suspend fun plan(page: Int): ReadingPlan? {
         val s = session ?: return null
-        if (page !in 0 until s.pageCount) return emptyList()
-        sentenceCache[page]?.let { return it }
-        val text = s.pageText(page)
-        val list = withContext(Dispatchers.Default) { SentenceSplitter.split(text) }
-        sentenceCache[page] = list
-        return list
+        if (page !in 0 until s.pageCount) return ReadingPlan(page, null, emptyList())
+        planCache[page]?.let { return it }
+        _state.value.doc?.fingerprint?.let { describer.load(it) }
+        val cat = ensureCatalog(s)
+        val (text, layout) = cat.analysis(page)
+        val sentences = withContext(Dispatchers.Default) { SentenceSplitter.split(text, layout::isReadable) }
+        for (key in ReadingPlans.referencedKeys(sentences)) cat.resolve(key, near = page)
+        val plan = ReadingPlans.build(page, layout, sentences, cat::resolveCached)
+        planCache[page] = plan
+        prefetchDescriptions(plan)
+        return plan
+    }
+
+    /** Drawing sheets (OCR'd reference numerals only) are skipped when reading on. */
+    private fun hasProse(plan: ReadingPlan?) =
+        plan != null && plan.bodySentences.isNotEmpty() && SentenceSplitter.looksLikeProse(plan.bodySentences)
+
+    private fun eligible(item: ReadItem): Boolean = when (item) {
+        is Body -> true
+        is FigureNote -> _state.value.prefs.figureMode != FigureMode.NONE && item.key !in spokenFigures &&
+            (item.figure ?: catalog?.resolveCached(item.key)) != null
+    }
+
+    private fun nextEligible(list: List<ReadItem>, from: Int): Int? {
+        var i = from.coerceAtLeast(0)
+        while (i < list.size) { if (eligible(list[i])) return i; i++ }
+        return null
+    }
+
+    private fun prevEligible(list: List<ReadItem>, from: Int): Int? {
+        var i = from.coerceAtMost(list.lastIndex)
+        while (i >= 0) { if (eligible(list[i])) return i; i-- }
+        return null
     }
 
     /** Toolbar button / P: start on the active pane's page, else pause / resume. */
@@ -671,16 +741,19 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         ttsJob?.cancel()
         ensureReader().stop()
         _state.update { it.copy(tts = TtsState(TtsStatus.STARTING, pane, page, 0, 0, emptyList()), menu = null) }
+        session?.let { s ->
+            if (figureIndexJob == null) figureIndexJob = viewModelScope.launch { runCatching { ensureCatalog(s).scanAll() } }
+        }
         ttsJob = viewModelScope.launch {
             // Toolbar play on a drawing sheet: look ahead for the next page of prose.
             // An explicit "read from here" reads whatever is under the finger.
             var p = page
-            var list = sentences(p)
+            var pl = plan(p)
             if (at == null) {
-                while (list != null && !hasProse(list) && p - page < MAX_SKIP && p + 1 < _state.value.pageCount) list = sentences(++p)
+                while (pl != null && !hasProse(pl) && p - page < MAX_SKIP && p + 1 < _state.value.pageCount) pl = plan(++p)
             }
             if (gen != ttsGeneration) return@launch
-            if (list.isNullOrEmpty()) {
+            if (pl == null || pl.bodySentences.isEmpty()) {
                 stopReading()
                 toast("No readable text on this page")
                 return@launch
@@ -689,8 +762,10 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
                 toast("No text on page ${page + 1}; reading from page ${p + 1}")
                 showReadingPage(pane, p)
             }
-            val index = if (at != null && p == page) SentenceSplitter.indexAt(list, at, slop = 4f) else 0
-            speakAt(pane, p, index, list, gen, TtsStatus.PLAYING)
+            val index = if (at != null && p == page) {
+                pl.bodyIndexToItem(SentenceSplitter.indexAt(pl.bodySentences, at, slop = 4f))
+            } else 0
+            speakAt(pane, p, index, pl.items, gen, TtsStatus.PLAYING)
         }
     }
 
@@ -713,10 +788,11 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         ++ttsGeneration
         ttsJob?.cancel()
         reader?.stop()
+        spokenFigures.clear()
         if (_state.value.tts != null) _state.update { it.copy(tts = null) }
     }
 
-    /** Previous / next sentence ([dir] = -1 / +1), crossing page boundaries. */
+    /** Previous / next item ([dir] = -1 / +1), crossing page boundaries. */
     fun skipSentence(dir: Int) {
         val t = _state.value.tts ?: return
         val status = if (t.status == TtsStatus.PAUSED) TtsStatus.PAUSED else TtsStatus.PLAYING
@@ -724,25 +800,30 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         ttsJob?.cancel()
         reader?.stop()
         ttsJob = viewModelScope.launch {
-            val list = sentences(t.page) ?: return@launch
-            val next = t.index + dir
-            when {
-                next < 0 -> {
-                    var p = t.page - 1
-                    while (p >= 0) {
-                        val prev = sentences(p)
-                        if (gen != ttsGeneration) return@launch
-                        if (!prev.isNullOrEmpty()) {
-                            showReadingPage(t.pane, p)
-                            speakAt(t.pane, p, prev.lastIndex, prev, gen, status)
-                            return@launch
-                        }
-                        p--
-                    }
-                    if (list.isNotEmpty()) speakAt(t.pane, t.page, 0, list, gen, status)
+            val pl = plan(t.page) ?: return@launch
+            val list = pl.items
+            if (dir < 0) {
+                val prev = prevEligible(list, t.index - 1)
+                if (prev != null) {
+                    speakAt(t.pane, t.page, prev, list, gen, status, backward = true)
+                    return@launch
                 }
-                next >= list.size -> advancePage(t.pane, t.page, gen, status)
-                else -> speakAt(t.pane, t.page, next, list, gen, status)
+                var p = t.page - 1
+                while (p >= 0) {
+                    val pp = plan(p)
+                    if (gen != ttsGeneration) return@launch
+                    if (pp != null && pp.bodySentences.isNotEmpty()) {
+                        showReadingPage(t.pane, p)
+                        speakAt(t.pane, p, pp.items.lastIndex, pp.items, gen, status, backward = true)
+                        return@launch
+                    }
+                    p--
+                }
+                speakAt(t.pane, t.page, 0, list, gen, status)
+            } else {
+                val next = nextEligible(list, t.index + 1)
+                if (next != null) speakAt(t.pane, t.page, next, list, gen, status)
+                else advancePage(t.pane, t.page, gen, status)
             }
         }
     }
@@ -758,44 +839,62 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun changeSpeechRate(delta: Float) = setSpeechRate(_state.value.prefs.speechRate + delta)
 
-    /** Re-reads [page] from [index] (or only moves the marker there when paused). */
+    /** Re-reads [page] from item [index] (or only moves the marker there when paused). */
     private fun restartAt(pane: Int, page: Int, index: Int, status: TtsStatus) {
         val gen = ++ttsGeneration
         ttsJob?.cancel()
         reader?.stop()
         ttsJob = viewModelScope.launch {
-            val list = sentences(page)
+            val pl = plan(page)
             if (gen != ttsGeneration) return@launch
-            if (list.isNullOrEmpty()) {
+            if (pl == null || pl.bodySentences.isEmpty()) {
                 _state.update { s ->
-                    s.copy(tts = s.tts?.copy(status = TtsStatus.PAUSED, pane = pane, page = page, index = 0, count = 0, quads = emptyList()))
+                    s.copy(tts = s.tts?.copy(status = TtsStatus.PAUSED, pane = pane, page = page, index = 0, count = 0, quads = emptyList(), label = null))
                 }
-                if (list != null) toast("No text on this page")
+                if (pl != null) toast("No text on this page")
                 return@launch
             }
-            speakAt(pane, page, index, list, gen, status)
+            speakAt(pane, page, index, pl.items, gen, status)
         }
     }
 
-    /** Points the reader at sentence [index] of [page] and, unless paused, speaks it and queues the next. */
-    private fun speakAt(pane: Int, page: Int, index: Int, list: List<Sentence>, gen: Int, status: TtsStatus) {
-        val i = index.coerceIn(0, list.lastIndex)
+    /**
+     * Points the reader at the first eligible item at or after [index] (before, when
+     * [backward]) and, unless paused, speaks it and queues the next one.
+     */
+    private fun speakAt(pane: Int, page: Int, index: Int, list: List<ReadItem>, gen: Int, status: TtsStatus, backward: Boolean = false) {
+        val i = (if (backward) prevEligible(list, index) else nextEligible(list, index))
+            ?: nextEligible(list, 0)
+            ?: run { advancePage(pane, page, gen, status); return }
+        val item = list[i]
         val r = ensureReader()
         val shown = when {
             status == TtsStatus.PAUSED -> TtsStatus.PAUSED
             r.isReady -> TtsStatus.PLAYING
             else -> TtsStatus.STARTING
         }
-        _state.update { it.copy(tts = TtsState(shown, pane, page, i, list.size, list[i].quads)) }
+        _state.update { it.copy(tts = TtsState(shown, pane, page, i, list.size, item.quads, (item as? FigureNote)?.key?.spoken)) }
         if (status == TtsStatus.PAUSED) return
-        r.speak(utteranceId(gen, page, i), spokenText(r, list[i]), flush = true)
-        if (i + 1 < list.size) r.speak(utteranceId(gen, page, i + 1), spokenText(r, list[i + 1]), flush = false)
+        r.speak(utteranceId(gen, page, i), textFor(item, r), flush = true)
+        nextEligible(list, i + 1)?.let { j -> r.speak(utteranceId(gen, page, j), textFor(list[j], r), flush = false) }
     }
 
-    /** Drawing sheets (OCR'd reference numerals only) are skipped when reading on. */
-    private fun hasProse(list: List<Sentence>) = list.isNotEmpty() && SentenceSplitter.looksLikeProse(list)
+    private fun textFor(item: ReadItem, r: SpeechReader): String = when (item) {
+        is Body -> SentenceSplitter.spoken(item.sentence.text)
+        is FigureNote -> {
+            val fig = item.figure ?: catalog?.resolveCached(item.key)
+            val detail = if (fig != null) describer.textFor(fig, _state.value.prefs.figureMode, null) else ""
+            "${item.key.spoken}. $detail"
+        }
+    }.take(r.maxLength)
 
-    private fun spokenText(r: SpeechReader, s: Sentence) = SentenceSplitter.spoken(s.text).take(r.maxLength)
+    private fun prefetchDescriptions(plan: ReadingPlan) {
+        val prefs = _state.value.prefs
+        if (prefs.figureMode != FigureMode.CLAUDE || prefs.claudeApiKey.isBlank()) return
+        plan.items.forEachIndexed { idx, item ->
+            if (item is FigureNote) item.figure?.let { describer.request(it, plan.referencingSentence(idx)) }
+        }
+    }
 
     private fun utteranceId(gen: Int, page: Int, index: Int) = "$gen:$page:$index"
 
@@ -821,26 +920,26 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** After the last sentence of [fromPage]: continue on the next page that has text. */
+    /** After the last item of [fromPage]: continue on the next page that has prose. */
     private fun advancePage(pane: Int, fromPage: Int, gen: Int, status: TtsStatus) {
         ttsJob = viewModelScope.launch {
             val n = _state.value.pageCount
             var p = fromPage + 1
-            var list: List<Sentence>? = null
+            var pl: ReadingPlan? = null
             var skipped = 0
             while (p < n) {
-                list = sentences(p)
+                pl = plan(p)
                 if (gen != ttsGeneration) return@launch
-                if (list == null || hasProse(list) || skipped >= MAX_SKIP) break
+                if (pl == null || hasProse(pl) || skipped >= MAX_SKIP) break
                 skipped++
                 p++
             }
-            if (list.isNullOrEmpty() || p >= n) {
+            if (pl == null || pl.bodySentences.isEmpty() || p >= n) {
                 stopReading()
                 toast(if (p >= n) "End of document" else "No more text found")
                 return@launch
             }
-            if (skipped > 0) toast("Skipped $skipped page(s) of drawings")
+            if (skipped > 0) toast("Skipped $skipped page(s) without text")
             val l = _state.value.layout
             val spread = l.mode == ViewMode.DUAL && Navigator.isSpread(l)
             val visibleIn = if (spread) l.panes.indexOfFirst { it.page == p } else -1
@@ -854,7 +953,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 showReadingPage(target, p)
             }
-            speakAt(target, p, 0, list, gen, status)
+            speakAt(target, p, 0, pl.items, gen, status)
         }
     }
 
@@ -878,23 +977,26 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             is SpeechReader.Event.Started -> {
                 val (gen, page, i) = parseId(e.id) ?: return
                 if (gen != ttsGeneration) return
-                val list = sentenceCache[page] ?: return
+                val list = planCache[page]?.items ?: return
                 if (i !in list.indices) return
+                val item = list[i]
+                if (item is FigureNote) spokenFigures += item.key
                 _state.update { st ->
                     val t = st.tts ?: return@update st
-                    st.copy(tts = t.copy(status = TtsStatus.PLAYING, page = page, index = i, count = list.size, quads = list[i].quads))
+                    st.copy(tts = t.copy(status = TtsStatus.PLAYING, page = page, index = i, count = list.size, quads = item.quads, label = (item as? FigureNote)?.key?.spoken))
                 }
-                // Keep one sentence queued behind the current one so there is no gap.
+                // Keep one item queued behind the current one so there is no gap.
                 val r = ensureReader()
-                if (i + 2 < list.size) r.speak(utteranceId(gen, page, i + 2), spokenText(r, list[i + 2]), flush = false)
-                if (i == list.lastIndex) viewModelScope.launch { runCatching { sentences(page + 1) } }
+                val j = nextEligible(list, i + 1)
+                if (j == null) viewModelScope.launch { runCatching { plan(page + 1) } }
+                else nextEligible(list, j + 1)?.let { k -> r.speak(utteranceId(gen, page, k), textFor(list[k], r), flush = false) }
             }
             is SpeechReader.Event.Done -> {
                 val (gen, page, i) = parseId(e.id) ?: return
                 if (gen != ttsGeneration) return
-                val list = sentenceCache[page] ?: return
+                val list = planCache[page]?.items ?: return
                 val t = _state.value.tts ?: return
-                if (i == list.lastIndex) advancePage(t.pane, page, gen, TtsStatus.PLAYING)
+                if (nextEligible(list, i + 1) == null) advancePage(t.pane, page, gen, TtsStatus.PLAYING)
             }
             is SpeechReader.Event.Stopped -> {}
             is SpeechReader.Event.Error -> {
@@ -903,6 +1005,37 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
                 stopReading()
                 toast("Speech failed (error ${e.code})")
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- read-aloud settings
+
+    fun setReadAloudPrefs(mode: FigureMode, apiKey: String, model: String) {
+        updatePrefs { it.copy(figureMode = mode, claudeApiKey = apiKey.trim(), claudeModel = model) }
+        claudeClient = null
+        // Plans built under the old mode may lack prefetches; they are cheap to rebuild.
+        planCache.clear()
+        dismissDialog()
+    }
+
+    /** Settings "Test": one tiny request with the key and model as typed. */
+    fun testClaude(apiKey: String, model: String) {
+        val key = apiKey.trim()
+        if (key.isEmpty()) return
+        viewModelScope.launch {
+            toast("Testing $model…")
+            when (val r = SdkClaudeClient(key, model).ping()) {
+                is ClaudeResult.Ok -> toast("Claude OK ($model)")
+                ClaudeResult.Refused -> toast("Claude answered with a refusal; the key works")
+                is ClaudeResult.Failed -> toast("Claude test failed: ${r.reason}")
+            }
+        }
+    }
+
+    fun clearFigureDescriptions() {
+        viewModelScope.launch {
+            describer.clear()
+            toast("Forgot this document's figure descriptions")
         }
     }
 
@@ -1005,7 +1138,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "MultiViewPDF"
-        private const val SENTENCE_CACHE = 6
+        private const val PLAN_CACHE = 6
         /** Pages of drawings to pass over before giving up on finding prose (patents have many sheets). */
         private const val MAX_SKIP = 12
     }

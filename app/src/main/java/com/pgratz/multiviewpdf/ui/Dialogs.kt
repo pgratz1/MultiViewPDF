@@ -10,7 +10,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -26,9 +36,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pgratz.multiviewpdf.NoteEdit
+import com.pgratz.multiviewpdf.model.AppPrefs
+import com.pgratz.multiviewpdf.model.FigureMode
 import com.pgratz.multiviewpdf.UiState
 import com.pgratz.multiviewpdf.ViewerViewModel
 
@@ -198,4 +212,66 @@ fun ShortcutsDialog(vm: ViewerViewModel) {
         },
         confirmButton = { TextButton(onClick = vm::dismissDialog) { Text("Close") } },
     )
+}
+
+/** Read-aloud settings: what to say for figures, and the Claude key/model for descriptions. */
+@Composable
+fun ReadAloudSettingsDialog(prefs: AppPrefs, vm: ViewerViewModel) {
+    var mode by remember { mutableStateOf(prefs.figureMode) }
+    var key by remember { mutableStateOf(prefs.claudeApiKey) }
+    var model by remember { mutableStateOf(prefs.claudeModel) }
+    var showKey by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = vm::dismissDialog,
+        title = { Text("Read aloud") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("When the text first mentions a figure or table:", style = MaterialTheme.typography.bodyMedium)
+                RadioRow("Skip it", mode == FigureMode.NONE) { mode = FigureMode.NONE }
+                RadioRow("Read its caption", mode == FigureMode.CAPTION) { mode = FigureMode.CAPTION }
+                RadioRow("Describe it with Claude", mode == FigureMode.CLAUDE) { mode = FigureMode.CLAUDE }
+                if (mode == FigureMode.CLAUDE) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = key,
+                        onValueChange = { key = it },
+                        label = { Text("Anthropic API key") },
+                        singleLine = true,
+                        visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showKey = !showKey }) {
+                                Icon(if (showKey) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, if (showKey) "Hide key" else "Show key")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    for ((id, name) in AppPrefs.CLAUDE_MODELS) RadioRow(name, model == id) { model = id }
+                    Row {
+                        TextButton(onClick = { vm.testClaude(key, model) }, enabled = key.isNotBlank()) { Text("Test") }
+                        TextButton(onClick = { vm.clearFigureDescriptions() }) { Text("Forget descriptions") }
+                    }
+                    Text(
+                        "Each figure is described once per document and cached on this device. " +
+                            "The key is kept in the app's private files and excluded from backups.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { vm.setReadAloudPrefs(mode, key, model) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = vm::dismissDialog) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 2.dp),
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(label)
+    }
 }

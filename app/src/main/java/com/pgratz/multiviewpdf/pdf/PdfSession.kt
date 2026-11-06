@@ -11,6 +11,8 @@ import com.artifex.mupdf.fitz.Point
 import com.artifex.mupdf.fitz.Quad
 import com.artifex.mupdf.fitz.Rect
 import com.artifex.mupdf.fitz.StructuredText
+import com.artifex.mupdf.fitz.StructuredTextWalker
+import com.artifex.mupdf.fitz.Image
 import com.artifex.mupdf.fitz.android.AndroidDrawDevice
 import com.pgratz.multiviewpdf.model.AnnotInfo
 import com.pgratz.multiviewpdf.model.AnnotType
@@ -131,6 +133,48 @@ class PdfSession private constructor(private var doc: PDFDocument, val workFile:
             if (lines.isEmpty()) null else TextBlock(lines)
         }
         PageText(blocks)
+    }
+
+    /**
+     * Bounding boxes of the page's raster images (figure photos, scanned plots). Vector
+     * drawings are not reported by this MuPDF build, so callers treat this as a hint only.
+     */
+    suspend fun pageImages(i: Int): List<PRect> = withContext(dispatcher) {
+        val out = ArrayList<PRect>()
+        try {
+            val st = page(i).toStructuredText("preserve-images")
+            try {
+                st.walk(object : StructuredTextWalker {
+                    override fun onImageBlock(bbox: Rect, transform: Matrix?, image: Image?) {
+                        out += bbox.toPRect()
+                    }
+                    override fun beginTextBlock(bbox: Rect?, flags: Int) {}
+                    override fun endTextBlock() {}
+                    override fun beginLine(bbox: Rect?, wmode: Int, dir: Point?) {}
+                    override fun endLine() {}
+                    override fun onChar(c: Int, origin: Point?, font: com.artifex.mupdf.fitz.Font?, size: Float, quad: Quad?, argb: Int, flags: Int, bidi: Int) {}
+                    override fun beginStruct(standard: String?, raw: String?, index: Int) {}
+                    override fun endStruct() {}
+                    override fun onVector(bbox: Rect?, info: StructuredTextWalker.VectorInfo?, argb: Int) {}
+                })
+            } finally {
+                st.destroy()
+            }
+        } catch (e: Throwable) {
+            // Best effort: layout analysis works from text geometry alone.
+        }
+        out
+    }
+
+    /**
+     * Renders the page-space [region] (e.g. a figure plus its caption) upright, scaled so the
+     * bitmap has at most [maxPixels] pixels. Used for figure descriptions.
+     */
+    suspend fun renderRegion(i: Int, region: PRect, maxPixels: Int = 1_200_000): Bitmap {
+        val area = (region.width * region.height).coerceAtLeast(1f)
+        val scale = kotlin.math.sqrt(maxPixels / area).coerceIn(0.5f, 4f)
+        val t = PageTransform(region, 0, scale)
+        return render(i, t, 0, 0, kotlin.math.ceil(t.contentWidth).toInt(), kotlin.math.ceil(t.contentHeight).toInt())
     }
 
     suspend fun hasText(i: Int): Boolean = withContext(dispatcher) {

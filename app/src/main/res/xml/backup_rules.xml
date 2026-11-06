@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- prefs/app.json holds the Claude API key: keep it out of Android backups. -->
+<full-backup-content>
+    <exclude domain="file" path="prefs/app.json" />
+</full-backup-content>

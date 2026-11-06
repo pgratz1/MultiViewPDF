@@ -125,6 +125,7 @@ fun ViewerScreen(ui: UiState, vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs:
         is Dialog.SaveFailed -> SaveFailedDialog(d.reason, vm, onSaveAs)
         Dialog.CropEditor -> {} // drawn as an overlay above
         Dialog.Shortcuts -> ShortcutsDialog(vm)
+        Dialog.ReadAloudSettings -> ReadAloudSettingsDialog(ui.prefs, vm)
         null -> {}
     }
 }
@@ -291,6 +292,9 @@ private fun OverflowMenu(vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs: () -
             DropdownMenuItem(text = { Text("Annotation author…") }, onClick = {
                 open = false; vm.openDialog(Dialog.Author)
             })
+            DropdownMenuItem(text = { Text("Read-aloud settings…") }, onClick = {
+                open = false; vm.openDialog(Dialog.ReadAloudSettings)
+            })
             DropdownMenuItem(text = { Text("Keyboard shortcuts (?)") }, onClick = {
                 open = false; vm.openDialog(Dialog.Shortcuts)
             })
@@ -320,7 +324,11 @@ private fun TtsBar(t: TtsState, rate: Float, vm: ViewerViewModel, modifier: Modi
             }
             SmallIcon(Icons.Filled.SkipNext, "Next sentence (.)") { vm.skipSentence(+1) }
             Text(
-                if (t.count > 0) "p. ${t.page + 1} · ${t.index + 1}/${t.count}" else "p. ${t.page + 1}",
+                when {
+                    t.label != null -> "p. ${t.page + 1} · ${t.label}"
+                    t.count > 0 -> "p. ${t.page + 1} · ${t.index + 1}/${t.count}"
+                    else -> "p. ${t.page + 1}"
+                },
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 6.dp),
             )

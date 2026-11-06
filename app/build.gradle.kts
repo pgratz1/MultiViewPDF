@@ -42,6 +42,15 @@ android {
         jvmTarget = "11"
     }
 
+    packaging {
+        resources {
+            // Duplicate metadata from the Anthropic SDK's Jackson/OkHttp dependencies.
+            excludes += setOf(
+                "META-INF/INDEX.LIST", "META-INF/DEPENDENCIES", "META-INF/LICENSE.md", "META-INF/NOTICE.md",
+                "META-INF/io.netty.versions.properties", "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+            )
+        }
+    }
     buildFeatures {
         compose = true
     }
@@ -62,6 +71,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     // MuPDF: rendering, text selection, and standard PDF annotation editing/saving (AGPL).
     implementation(libs.mupdf.fitz)
+    // Claude figure descriptions (Anthropic Java SDK; OkHttp + Jackson).
+    implementation(libs.anthropic.java)
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)

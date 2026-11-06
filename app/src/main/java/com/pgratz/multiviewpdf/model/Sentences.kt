@@ -25,9 +25,9 @@ object SentenceSplitter {
     /** "1." / "(12)" / "(a)" standing alone: the marker of a claim or list item. */
     private val LIST_MARKER = Regex("""^\(?\d{1,3}[.)]$|^\([a-zA-Z]\)$""")
 
-    private val NUMERIC_LINE = Regex("""^\d{1,3}$""")
+    private val NUMERIC_LINE = Regex("""^\d{1,4}$""")
 
-    /** Drops empty blocks and the patent gutter's line-number blocks (5, 10, 15, ...). */
+    /** Drops empty blocks and gutter line-number blocks (5, 10, 15, ... or 1045 in a submission draft). */
     fun defaultFilter(block: TextBlock): Boolean {
         val lines = block.lines.map { it.text.trim() }.filter { it.isNotEmpty() }
         return lines.isNotEmpty() && !lines.all { NUMERIC_LINE.matches(it) }

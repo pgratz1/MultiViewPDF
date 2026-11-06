@@ -1,5 +1,7 @@
 package com.pgratz.multiviewpdf
 
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -11,6 +13,7 @@ import com.artifex.mupdf.fitz.Rect
 import com.pgratz.multiviewpdf.model.AnnotType
 import com.pgratz.multiviewpdf.model.PPoint
 import com.pgratz.multiviewpdf.model.PRect
+import com.pgratz.multiviewpdf.model.Layout
 import com.pgratz.multiviewpdf.model.PageTransform
 import com.pgratz.multiviewpdf.model.SentenceSplitter
 import com.pgratz.multiviewpdf.model.hitTest
@@ -118,6 +121,38 @@ class PdfSessionTest {
         val sentences = SentenceSplitter.split(text)
         assertTrue("FIG. 1 must stay one sentence: $sentences", sentences.any { it.text == "FIG. 1" })
         assertEquals(1, sentences.first { it.text.startsWith("Claim 1") }.quads.size)
+        s.close()
+    }
+
+    @Test
+    fun reportsImagesAndRendersRegions() = runBlocking {
+        // A page with a paragraph, a small caption line and a raster image above it.
+        val f = File(ctx.cacheDir, "figure-${System.nanoTime()}.pdf")
+        val doc = PdfDocument()
+        val page = doc.startPage(PdfDocument.PageInfo.Builder(612, 792, 1).create())
+        val body = Paint().apply { textSize = 10f }
+        for (k in 0 until 6) page.canvas.drawText("Body text line number $k that keeps going across the column width.", 72f, 420f + k * 12f, body)
+        val bmp = Bitmap.createBitmap(40, 30, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }
+        page.canvas.drawBitmap(bmp, 72f, 100f, null)
+        page.canvas.drawText("Figure 1: A blue rectangle.", 72f, 160f, Paint().apply { textSize = 9f })
+        doc.finishPage(page)
+        f.outputStream().use { doc.writeTo(it) }
+        doc.close()
+
+        val s = PdfSession.open(f)
+        val images = s.pageImages(0)
+        assertEquals("one raster image expected: $images", 1, images.size)
+        assertTrue(images[0].contains(PPoint(90f, 115f)))
+
+        val layout = Layout.analyze(0, s.pageText(0), s.bounds(0), images)
+        val cap = layout.captions.single()
+        assertEquals(1, cap.number)
+        assertTrue("region should cover the image: ${cap.region}", cap.region.contains(PPoint(90f, 115f)))
+
+        val region = cap.extent
+        val rendered = s.renderRegion(0, region, maxPixels = 300_000)
+        assertTrue(rendered.width * rendered.height <= 300_000 + rendered.width + rendered.height)
+        assertEquals(region.width / region.height, rendered.width.toFloat() / rendered.height, 0.05f)
         s.close()
     }
 
