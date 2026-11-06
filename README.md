@@ -4,7 +4,7 @@ A two-pane PDF reader for Android, built for reading with AR glasses. It runs on
 
 The main use case is reading patents and papers: keep a figure locked in one pane while you page through the text in the other.
 
-> **Status:** early (v0.1), personal project. It works on a Pixel 10 (Android 17) and the emulator, and is still being tested on the glasses.
+> **Status:** early (v0.1), personal project. It works on a Pixel 10 (Android 17) and the emulator, and is still being tested on the glasses. See [`HANDOFF.md`](HANDOFF.md) for the current state of the work.
 
 ## Features
 
@@ -21,6 +21,9 @@ The main use case is reading patents and papers: keep a figure locked in one pan
 - **Edge taps.** Tapping the outer edge of a page scrolls sideways when you're zoomed in, then turns the page.
 - **Fullscreen mode.** Hides all controls; exit from the right-click / long-press menu.
 - **Dark (inverted) pages** for the glasses, where black is see-through.
+- **Clickable links.** Tap or click a link in the PDF to see where it goes; tap the chip to open the web page or jump to the page. With a mouse, hovering shows the target and a hand cursor.
+- **Read aloud** with the phone's text-to-speech engine. Reads the active page from the top and turns pages as it goes, or starts from a long-pressed sentence. The sentence being spoken is highlighted; a small bar gives previous/next sentence, pause, stop and speed. The splitter knows about "FIG. 3", "U.S. Pat. No." and OCR spacing, and skips patent drawing sheets.
+- **Figure-aware reading for papers.** Running headers, captions, chart labels, table cells, algorithm listings and bibliographies are not read in place. When the text first mentions "Figure 3" or "Table II", the reader says the caption, or, if you add an Anthropic API key under ⋮ → *Read-aloud settings…*, a short Claude description of the rendered figure (generated once per document and cached on the device). Works with ACM and IEEE layouts.
 - **Short animations** for zooming and page turns.
 - **Remembers your view of each document**: pages, locks, rotation and crop.
 - **Opens from anywhere Android can open a PDF**: Files, Drive, Dropbox and so on. Saves write back to the original file, or offer "Save a copy" when the source is read-only.
@@ -51,6 +54,10 @@ Everything works with touch, with a mouse, and with a keyboard. Hover over any b
 | `I` | Dark (inverted) pages |
 | `G` | Go to page |
 | `F11` | Fullscreen on/off (also: pane menu, Back) |
+| `P` / `Shift+P` | Read aloud: play / pause, stop (media keys work too) |
+| `,` / `.` | Previous / next sentence |
+| `<` / `>` | Slower / faster speech |
+| Click / tap a link | Show where it goes; tap the chip to open it |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / save a copy |
 | `Ctrl+O` / `Ctrl+W` | Open / close |
 | Right-click / long-press | Note, highlight and pane menu |
@@ -70,9 +77,13 @@ Android Studio works, but isn't required.
 ```bash
 ./gradlew assembleDebug                 # build the debug APK
 ./gradlew installDebug                  # install on a connected device
-./gradlew testDebugUnitTest             # JVM unit tests (geometry, navigation, auto-crop, columns)
-./gradlew connectedDebugAndroidTest     # MuPDF annotation round-trip tests (needs a device/emulator)
+./gradlew testDebugUnitTest             # JVM unit tests (geometry, navigation, auto-crop, columns, layout, sentences)
+./gradlew connectedDebugAndroidTest     # MuPDF round-trip tests: annotations, links, text layer (needs a device/emulator)
 ```
+
+Gradle 8.11 needs a JDK no newer than 23 to run on; if your default `java` is newer, point `JAVA_HOME` at a JDK 17 or 21.
+
+The optional Claude figure descriptions use the Anthropic Java SDK, which adds roughly 50 MB to the unshrunken debug APK. Nothing is sent anywhere unless you enter an API key in the app.
 
 `local.properties` must point at your SDK (`sdk.dir=/path/to/Android/Sdk`). Android Studio creates it for you.
 
@@ -97,17 +108,20 @@ adb connect <phone-ip>:<port>               # the port shown on the Wireless deb
 app/src/main/java/com/pgratz/multiviewpdf/
   MainActivity.kt         intents, file pickers, keyboard, fullscreen system bars
   ViewerViewModel.kt      single StateFlow<UiState>; all commands
-  model/                  pure Kotlin, unit-tested: PageTransform, Navigator, AutoCrop, ColumnFinder, …
+  model/                  pure Kotlin, unit-tested: PageTransform, Navigator, AutoCrop, ColumnFinder,
+                          Layout (page structure), Sentences (TTS splitting), Figures (references, reading plans), …
   pdf/                    MuPDF session (one dedicated thread), SAF document store, prefs
+  tts/                    speech engine wrapper, figure catalog, Claude figure descriptions
   ui/                     Compose UI: panes, toolbar, crop editor, dialogs
 ```
 
-Every page coordinate goes through `model/PageTransform.kt`: rendering, hit-testing, selection handles and crop. See [`CLAUDE.md`](CLAUDE.md) for more detailed developer notes and [`PLAN.md`](PLAN.md) for the original design.
+Every page coordinate goes through `model/PageTransform.kt`: rendering, hit-testing, selection handles and crop. See [`CLAUDE.md`](CLAUDE.md) for more detailed developer notes, [`PLAN.md`](PLAN.md) for the original design and [`docs/plans/`](docs/plans/) for later feature designs.
 
 ## Built with
 
 - Kotlin, Jetpack Compose and Material 3
 - [MuPDF](https://mupdf.com/) (`com.artifex.mupdf:fitz`) for rendering and annotations
+- Android's `TextToSpeech` for reading aloud; the [Anthropic Java SDK](https://github.com/anthropics/anthropic-sdk-java) for optional figure descriptions
 
 ## License
 
