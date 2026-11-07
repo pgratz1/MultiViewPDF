@@ -285,4 +285,24 @@ class LayoutTest {
         assertTrue(l.captions.isEmpty())
         assertEquals(1, l.readable().size)
     }
+
+    // ---- MICRO page 2 as the phone saw it: chart labels measured at body size from their glyph boxes
+
+    @Test fun oneWordChartLabelLinesDoNotBoundTheFigureRegion() {
+        val labels = blk(325f, 75f, 9.8f, listOf("SPP", "VLDP", "PPF", "BOP") + List(13) { "0.%02d".format(it * 5) })
+        val cap = blk(318f, 184f, 8f, listOf("Figure 2. Probability distribution of discarded prefetches for", "four spatial cache prefetchers and 80 applications."))
+        val bodyR = body(318f, 244f, 30)
+        val l = Layout.analyze(2, PageText(listOf(body(53f, 77f, 40), labels, cap, bodyR)), page)
+        val f2 = l.captions.single()
+        assertEquals(BlockClass.IN_FIGURE, l.cls(labels))
+        assertTrue("region $f2", f2.region.y1 <= f2.bounds.y0 + 0.01f && f2.region.height > 90f)
+    }
+
+    @Test fun lineSizesBeatGlyphHeightsWhenPresent() {
+        // Same block, but the text layer says the labels are really 5.8 pt: small print, not body.
+        val tall = blk(325f, 75f, 9.8f, listOf("SPP", "VLDP", "PPF", "BOP"))
+        val sized = TextBlock(tall.lines.map { TextLine(it.text, it.quads, 5.8f) })
+        val l = Layout.analyze(2, PageText(listOf(body(53f, 77f, 40), sized, body(318f, 244f, 30))), page)
+        assertEquals(BlockClass.SMALL_PRINT, l.cls(sized))
+    }
 }

@@ -5,9 +5,10 @@ import kotlin.math.min
 
 /**
  * One line of a page's text layer. [quads] holds one quad per character of [text]
- * (same length), so any substring maps straight back onto the page.
+ * (same length), so any substring maps straight back onto the page. [size] is the
+ * font size in points when the source knows it (0 = unknown; glyph heights are used).
  */
-data class TextLine(val text: String, val quads: List<PQuad>) {
+data class TextLine(val text: String, val quads: List<PQuad>, val size: Float = 0f) {
     init {
         require(text.length == quads.size) { "text and quads differ in length" }
     }

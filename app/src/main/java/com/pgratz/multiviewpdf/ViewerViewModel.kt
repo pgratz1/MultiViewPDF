@@ -168,6 +168,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app), ReadAloudContro
         render = { fig -> session?.renderRegion(fig.page, fig.caption.extent) },
         client = ::currentClaudeClient,
         onFailure = { reason -> toast("Claude unavailable, reading captions instead ($reason)") },
+        debugDir = if (BuildConfig.DEBUG) java.io.File(app.cacheDir, "figures") else null,
     )
 
     private val _state = MutableStateFlow(UiState())

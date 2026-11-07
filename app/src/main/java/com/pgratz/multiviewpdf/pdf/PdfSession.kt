@@ -116,23 +116,57 @@ class PdfSession private constructor(private var doc: PDFDocument, val workFile:
      * reading order. Sentence splitting for read-aloud works on this off the MuPDF thread.
      */
     suspend fun pageText(i: Int): PageText = withContext(dispatcher) {
-        val blocks = text(i).blocks.orEmpty().mapNotNull { b ->
+        val st = text(i)
+        val sizes = charSizes(st)
+        var k = 0
+        val blocks = st.blocks.orEmpty().mapNotNull { b ->
             val lines = b.lines.orEmpty().mapNotNull { l ->
                 val chars = l.chars.orEmpty()
                 if (chars.isEmpty()) return@mapNotNull null
                 val sb = StringBuilder(chars.size)
                 val quads = ArrayList<PQuad>(chars.size)
-                for (ch in chars) {
+                val lineSizes = if (sizes != null) FloatArray(chars.size) else null
+                for ((n, ch) in chars.withIndex()) {
                     val c = ch.c
                     // One Kotlin char per MuPDF codepoint keeps text and quads aligned.
                     sb.append(if (c in 0..0xD7FF || c in 0xE000..0xFFFF) c.toChar() else '\uFFFD')
                     quads += ch.quad.toPQuad()
+                    if (sizes != null && lineSizes != null) lineSizes[n] = sizes[k++]
                 }
-                TextLine(sb.toString(), quads)
+                val size = lineSizes?.let { ls -> ls.sort(); ls[ls.size / 2] } ?: 0f
+                TextLine(sb.toString(), quads, size)
             }
             if (lines.isEmpty()) null else TextBlock(lines)
         }
         PageText(blocks)
+    }
+
+    /**
+     * Font size of every character in [st], in the order [StructuredText.getBlocks] lists them,
+     * which the Java API only exposes through the walker. Null if the walk disagrees with the
+     * block list (callers then fall back to glyph heights).
+     */
+    private fun charSizes(st: StructuredText): FloatArray? {
+        val out = ArrayList<Float>(4096)
+        try {
+            st.walk(object : StructuredTextWalker {
+                override fun onImageBlock(bbox: Rect?, transform: Matrix?, image: Image?) {}
+                override fun beginTextBlock(bbox: Rect?, flags: Int) {}
+                override fun endTextBlock() {}
+                override fun beginLine(bbox: Rect?, wmode: Int, dir: Point?) {}
+                override fun endLine() {}
+                override fun onChar(c: Int, origin: Point?, font: com.artifex.mupdf.fitz.Font?, size: Float, quad: Quad?, argb: Int, flags: Int, bidi: Int) {
+                    out += size
+                }
+                override fun beginStruct(standard: String?, raw: String?, index: Int) {}
+                override fun endStruct() {}
+                override fun onVector(bbox: Rect?, info: StructuredTextWalker.VectorInfo?, argb: Int) {}
+            })
+        } catch (e: Throwable) {
+            return null
+        }
+        val expected = st.blocks.orEmpty().sumOf { b -> b.lines.orEmpty().sumOf { it.chars.orEmpty().size } }
+        return if (out.size == expected) out.toFloatArray() else null
     }
 
     /**

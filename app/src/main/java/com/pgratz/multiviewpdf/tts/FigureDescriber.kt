@@ -28,6 +28,8 @@ class FigureDescriber(
     private val render: suspend (Figure) -> Bitmap?,
     private val client: () -> ClaudeClient?,
     private val onFailure: (String) -> Unit,
+    /** Debug builds: every image sent to Claude is also written here as `<figure id>.png`. */
+    private val debugDir: java.io.File? = null,
 ) {
     private var fingerprint: String? = null
     private var cache = FigureDescriptions()
@@ -84,6 +86,8 @@ class FigureDescriber(
                         ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
                     }
                     bmp.recycle()
+                    Log.i(TAG, "claude $id request p${fig.page + 1} region=${fig.caption.region} extent=${fig.caption.extent} png=${png.size}B")
+                    debugDir?.let { d -> runCatching { d.mkdirs(); java.io.File(d, "$id.png").writeBytes(png) } }
                     val req = DescribeRequest(fig.key.spoken, fig.caption.text, fig.caption.subCaptions, sentence, png)
                     when (val r = c.describe(req)) {
                         is ClaudeResult.Ok -> {

@@ -39,6 +39,14 @@ class FigureCatalog(private val session: PdfSession) {
         val layout = withContext(Dispatchers.Default) { Layout.analyze(page, text, bounds, images, hint) }
         texts[page] = text
         layouts[page] = layout
+        if (com.pgratz.multiviewpdf.BuildConfig.DEBUG) {
+            android.util.Log.d("MultiViewPDF", "layout p${page + 1} bounds=$bounds body=${layout.bodySize} hint=$hint images=$images")
+            for (b in layout.blocks) android.util.Log.d(
+                "MultiViewPDF",
+                "  ${b.cls} ${b.bounds} size=${b.fontSize} lines=${b.lineCount} '${b.block.lines.firstOrNull()?.text?.take(30)}'"
+            )
+            for (c in layout.captions) android.util.Log.d("MultiViewPDF", "  CAP ${c.kind} ${c.number} bounds=${c.bounds} region=${c.region}")
+        }
         if (layout.bodyChars >= MIN_BODY_CHARS) bodySizes += layout.bodySize
         for (c in layout.captions) {
             val key = FigureKey(c.kind, c.number)

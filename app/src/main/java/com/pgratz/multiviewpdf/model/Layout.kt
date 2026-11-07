@@ -199,14 +199,24 @@ object Layout {
         val lines: List<String> = block.lines.map { it.text.trim() }.filter { it.isNotEmpty() }
         val bounds: PRect = block.bounds
         val chars: Int = lines.sumOf { it.length }
+        /**
+         * Character-weighted median font size. Real sizes when the text layer carries them;
+         * glyph-box heights otherwise. The two differ by font: a chart's tick labels measured
+         * 1.7× their point size from their boxes, which made them look like body text.
+         */
         val size: Float = run {
+            val sized = block.lines.filter { it.size > 0f && it.text.isNotBlank() }
+            if (sized.isNotEmpty()) {
+                val all = sized.flatMap { l -> List(l.text.trim().length) { l.size } }.sorted()
+                return@run all[all.size / 2]
+            }
             val heights = block.lines.flatMap { l -> l.quads.map { it.bounds.height } }.filter { it > 0f }.sorted()
             if (heights.isEmpty()) 0f else heights[heights.size / 2]
         }
         val words: Int = lines.sumOf { it.split(Regex("\\s+")).size }
         val wordsPerLine: Float = if (lines.isEmpty()) 0f else words.toFloat() / lines.size
-        /** Running text: three or more lines, or a long one- or two-liner. */
-        val isParagraph: Boolean get() = lines.size >= 3 || words >= PARAGRAPH_WORDS
+        /** Running text: three or more lines of more than a word each, or a long one- or two-liner. */
+        val isParagraph: Boolean get() = (lines.size >= 3 && wordsPerLine >= 2f) || words >= PARAGRAPH_WORDS
         /** A one- or two-line sentence (bounds a figure region; a listing line doesn't). */
         val isProseFragment: Boolean get() = lines.size <= 2 && words >= PROSE_FRAGMENT_WORDS
         /** A pseudo-code line: step number, Input/Output, trailing ';' or code punctuation. */

@@ -1,6 +1,7 @@
 package com.pgratz.multiviewpdf
 
 import com.pgratz.multiviewpdf.model.BlockClass
+import com.pgratz.multiviewpdf.model.Caption
 import com.pgratz.multiviewpdf.model.FigureKind
 import com.pgratz.multiviewpdf.model.Layout
 import com.pgratz.multiviewpdf.model.PQuad
@@ -49,10 +50,10 @@ class RealPagesLayoutTest {
                     cur += if (y1 - y0 > 4f * (x1 - x0)) {
                         // Rotated line (side banner, y-axis label): lay the chars out vertically.
                         val ch = (y1 - y0) / text.length
-                        TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0, y0 + i * ch, x1, y0 + (i + 1) * ch)) })
+                        TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0, y0 + i * ch, x1, y0 + (i + 1) * ch)) }, size)
                     } else {
                         val cw = (x1 - x0) / text.length
-                        TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0 + i * cw, y0, x0 + (i + 1) * cw, y0 + size)) })
+                        TextLine(text, text.indices.map { i -> PQuad.of(PRect(x0 + i * cw, y0, x0 + (i + 1) * cw, y0 + size)) }, size)
                     }
                 }
             }
@@ -74,6 +75,8 @@ class RealPagesLayoutTest {
     /** Class of the first block any of whose lines starts with [prefix] (listing steps put the number on its own line). */
     private fun PageLayout.classOfBlockWithLine(prefix: String) =
         blocks.first { b -> b.block.lines.any { it.text.trim().startsWith(prefix) } }.cls
+
+    private fun Caption.describeRegion() = "caption $bounds region $region"
 
     /** Every block's class, size and first line: for assertion messages. */
     private fun PageLayout.describe() = blocks.joinToString("\n") { b ->
@@ -153,6 +156,8 @@ class RealPagesLayoutTest {
         assertEquals(listOf(2), l.captions.map { it.number })
         val f2 = l.captions.single()
         assertTrue(f2.text.startsWith("Figure 2. Probability distribution"))
+        // The violin plot sits above its caption: the region must be the chart, not the gap below.
+        assertTrue(f2.describeRegion(), f2.region.y1 <= f2.bounds.y0 + 0.01f && f2.region.height > 90f)
         assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("SPP"))
         assertEquals(BlockClass.IN_FIGURE, l.classOfBlockStarting("Probability"))
         assertEquals(BlockClass.HEADER_FOOTER, l.classOfBlockStarting("Authorized licensed use"))
