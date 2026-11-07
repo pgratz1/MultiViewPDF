@@ -40,6 +40,8 @@ import com.pgratz.multiviewpdf.pdf.PrefsStore
 import com.pgratz.multiviewpdf.tts.ClaudeResult
 import com.pgratz.multiviewpdf.tts.FigureCatalog
 import com.pgratz.multiviewpdf.tts.FigureDescriber
+import com.pgratz.multiviewpdf.tts.ReadAloudController
+import com.pgratz.multiviewpdf.tts.ReadAloudService
 import com.pgratz.multiviewpdf.tts.SdkClaudeClient
 import com.pgratz.multiviewpdf.tts.SpeechReader
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +58,8 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -138,7 +142,7 @@ data class UiState(
 }
 
 @OptIn(FlowPreview::class)
-class ViewerViewModel(app: Application) : AndroidViewModel(app) {
+class ViewerViewModel(app: Application) : AndroidViewModel(app), ReadAloudController {
     private val store = DocumentStore(app)
     private val prefsStore = PrefsStore(app)
     private var session: PdfSession? = null
@@ -176,6 +180,16 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val prefs = prefsStore.loadApp()
             _state.update { it.copy(prefs = prefs) }
+        }
+        // Reading aloud runs inside a foreground media service, so it survives the screen
+        // turning off and gets controls in the notification shade. Started on the first
+        // item; the service stops itself when playback becomes null.
+        ReadAloudService.controller = this
+        viewModelScope.launch {
+            _state.map { it.tts != null }.distinctUntilChanged().collect { reading ->
+                if (reading) runCatching { ReadAloudService.start(getApplication()) }
+                    .onFailure { Log.w(TAG, "read-aloud service failed to start", it) }
+            }
         }
         // Remember each document's view (pages, locks, rotations, crop) as it changes.
         viewModelScope.launch {
@@ -656,12 +670,50 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------------------------------------------------------- read aloud
 
+    /** For [ReadAloudService]: document title and progress while reading, null when idle. */
+    override val playback: StateFlow<ReadAloudService.Playback?> = _state.map { s ->
+        s.tts?.let { t ->
+            ReadAloudService.Playback(
+                title = s.doc?.name?.removeSuffix(".pdf") ?: "MultiViewPDF",
+                page = t.page, index = t.index, count = t.count, label = t.label,
+                playing = t.status != TtsStatus.PAUSED,
+            )
+        }
+    }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     private fun ensureReader(): SpeechReader {
         reader?.let { return it }
-        val r = SpeechReader(getApplication<Application>(), _state.value.prefs.speechRate)
+        val p = _state.value.prefs
+        val r = SpeechReader(getApplication<Application>(), p.speechRate, p.voiceName)
         reader = r
         viewModelScope.launch { r.events.collect { onSpeechEvent(it) } }
         return r
+    }
+
+    /** Engine voices for the settings picker; filled by [loadVoices] once the engine is up. */
+    private val _voices = MutableStateFlow<List<SpeechReader.VoiceInfo>>(emptyList())
+    val voices: StateFlow<List<SpeechReader.VoiceInfo>> = _voices.asStateFlow()
+    private val _defaultVoice = MutableStateFlow<String?>(null)
+    val defaultVoice: StateFlow<String?> = _defaultVoice.asStateFlow()
+
+    fun loadVoices() {
+        val r = ensureReader()
+        if (r.isReady) publishVoices(r)
+        // else: published from onSpeechEvent(Ready)
+    }
+
+    private fun publishVoices(r: SpeechReader) {
+        _voices.value = r.voices()
+        _defaultVoice.value = r.defaultVoiceName()
+    }
+
+    /** Settings "Listen": says a sample sentence in [voiceName] (pauses reading first). */
+    fun previewVoice(voiceName: String, rate: Float) {
+        pauseReading()
+        val r = ensureReader()
+        r.setVoice(voiceName)
+        r.setRate(rate)
+        r.speak(PREVIEW_ID, "This is how the reader will sound. Figure 3 shows the geometric mean speedup over the baseline.", flush = true)
     }
 
     private fun ensureCatalog(s: PdfSession): FigureCatalog = catalog ?: FigureCatalog(s).also { catalog = it }
@@ -677,7 +729,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * The page's reading plan: readable sentences (no headers, captions or figure labels)
-     * with a figure note after each first mention. Built off the MuPDF thread and cached.
+     * with a figure note before each first mention. Built off the MuPDF thread and cached.
      */
     private suspend fun plan(page: Int): ReadingPlan? {
         val s = session ?: return null
@@ -763,13 +815,13 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
                 showReadingPage(pane, p)
             }
             val index = if (at != null && p == page) {
-                pl.bodyIndexToItem(SentenceSplitter.indexAt(pl.bodySentences, at, slop = 4f))
+                pl.withLeadingNotes(pl.bodyIndexToItem(SentenceSplitter.indexAt(pl.bodySentences, at, slop = 4f)))
             } else 0
             speakAt(pane, p, index, pl.items, gen, TtsStatus.PLAYING)
         }
     }
 
-    fun pauseReading() {
+    override fun pauseReading() {
         val t = _state.value.tts ?: return
         if (t.status == TtsStatus.PAUSED) return
         ++ttsGeneration
@@ -778,13 +830,13 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(tts = t.copy(status = TtsStatus.PAUSED)) }
     }
 
-    fun resumeReading() {
+    override fun resumeReading() {
         val t = _state.value.tts ?: return
         if (t.status != TtsStatus.PAUSED) return
         restartAt(t.pane, t.page, t.index, TtsStatus.PLAYING)
     }
 
-    fun stopReading() {
+    override fun stopReading() {
         ++ttsGeneration
         ttsJob?.cancel()
         reader?.stop()
@@ -793,7 +845,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Previous / next item ([dir] = -1 / +1), crossing page boundaries. */
-    fun skipSentence(dir: Int) {
+    override fun skipSentence(dir: Int) {
         val t = _state.value.tts ?: return
         val status = if (t.status == TtsStatus.PAUSED) TtsStatus.PAUSED else TtsStatus.PLAYING
         val gen = ++ttsGeneration
@@ -969,7 +1021,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun onSpeechEvent(e: SpeechReader.Event) {
         when (e) {
-            SpeechReader.Event.Ready -> {}
+            SpeechReader.Event.Ready -> reader?.let { publishVoices(it) }
             SpeechReader.Event.InitFailed -> {
                 _state.update { it.copy(tts = null) }
                 toast("No text-to-speech engine available (Settings → Accessibility → Text-to-speech output)")
@@ -1000,6 +1052,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
             }
             is SpeechReader.Event.Stopped -> {}
             is SpeechReader.Event.Error -> {
+                if (e.id == PREVIEW_ID) { toast("That voice failed to speak (error ${e.code})"); return }
                 val gen = e.id?.let { parseId(it)?.first }
                 if (gen != null && gen != ttsGeneration) return
                 stopReading()
@@ -1010,11 +1063,19 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------------------------------------------------------- read-aloud settings
 
-    fun setReadAloudPrefs(mode: FigureMode, apiKey: String, model: String) {
-        updatePrefs { it.copy(figureMode = mode, claudeApiKey = apiKey.trim(), claudeModel = model) }
+    fun setReadAloudPrefs(mode: FigureMode, apiKey: String, model: String, voiceName: String) {
+        updatePrefs { it.copy(figureMode = mode, claudeApiKey = apiKey.trim(), claudeModel = model, voiceName = voiceName) }
+        reader?.let { it.setVoice(voiceName); it.setRate(_state.value.prefs.speechRate) }
         claudeClient = null
         // Plans built under the old mode may lack prefetches; they are cheap to rebuild.
         planCache.clear()
+        dismissDialog()
+    }
+
+    /** Settings "Cancel": undo any preview voice/rate and close. */
+    fun cancelReadAloudSettings() {
+        val p = _state.value.prefs
+        reader?.let { it.setVoice(p.voiceName); it.setRate(p.speechRate) }
         dismissDialog()
     }
 
@@ -1128,6 +1189,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
     val saveAsRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     override fun onCleared() {
+        if (ReadAloudService.controller === this) ReadAloudService.controller = null
         reader?.shutdown()
         reader = null
         val s = session ?: return
@@ -1138,6 +1200,7 @@ class ViewerViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "MultiViewPDF"
+        private const val PREVIEW_ID = "preview"
         private const val PLAN_CACHE = 6
         /** Pages of drawings to pass over before giving up on finding prose (patents have many sheets). */
         private const val MAX_SKIP = 12

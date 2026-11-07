@@ -35,24 +35,32 @@ class ReadingPlanTest {
         s("Figure 3: Geomean increase in activations.", 4), // a caption that slipped through
     )
 
-    @Test fun notesFollowFirstMentionOnly() {
+    @Test fun notesPrecedeFirstMentionOnly() {
         val plan = ReadingPlans.build(2, null, sentences) { catalog[it] }
         val kinds = plan.items.map { if (it is Body) "B" else (it as FigureNote).key.id }
-        assertEquals(listOf("B", "B", "figure-3", "table-1", "B", "B", "figure-9", "B"), kinds)
-        val note3 = plan.items[2] as FigureNote
+        assertEquals(listOf("B", "figure-3", "table-1", "B", "B", "figure-9", "B", "B"), kinds)
+        val note3 = plan.items[1] as FigureNote
         assertEquals(fig3, note3.figure)
         assertEquals(listOf(PQuad.of(fig3.caption.extent)), note3.quads) // same page: highlight the figure
-        val noteT = plan.items[3] as FigureNote
+        val noteT = plan.items[2] as FigureNote
         assertTrue(noteT.quads.isEmpty()) // other page: no highlight, no view change
-        val note9 = plan.items[6] as FigureNote
+        val note9 = plan.items[5] as FigureNote
         assertNull(note9.figure)
+        // The note's context for Claude is the sentence it introduces.
+        assertEquals(sentences[1].text, plan.referencingSentence(1))
+        assertEquals(sentences[1].text, plan.referencingSentence(2))
+        assertEquals(sentences[3].text, plan.referencingSentence(5))
+        // "Read from here" on a referencing sentence starts with its notes.
+        assertEquals(1, plan.withLeadingNotes(3))
+        assertEquals(0, plan.withLeadingNotes(0))
+        assertEquals(4, plan.withLeadingNotes(4))
     }
 
     @Test fun bodyIndexMapsToItems() {
         val plan = ReadingPlans.build(2, null, sentences) { catalog[it] }
         assertEquals(5, plan.bodySentences.size)
         assertEquals(0, plan.bodyIndexToItem(0))
-        assertEquals(1, plan.bodyIndexToItem(1))
+        assertEquals(3, plan.bodyIndexToItem(1))
         assertEquals(4, plan.bodyIndexToItem(2))
         assertEquals(7, plan.bodyIndexToItem(4))
         assertEquals(setOf(fig3.key, table1.key, FigureKey(FigureKind.FIGURE, 9)), plan.referencedKeys)

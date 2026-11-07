@@ -1,0 +1,2 @@
+# Git-ignored. Dropbox syncs this file to your other machines. See .env.example.
+ANTHROPIC_API_KEY=

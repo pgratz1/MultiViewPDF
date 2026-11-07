@@ -17,6 +17,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +48,7 @@ import com.pgratz.multiviewpdf.model.AppPrefs
 import com.pgratz.multiviewpdf.model.FigureMode
 import com.pgratz.multiviewpdf.UiState
 import com.pgratz.multiviewpdf.ViewerViewModel
+import java.util.Locale
 
 @Composable
 fun NoteDialog(edit: NoteEdit, vm: ViewerViewModel) {
@@ -214,18 +218,47 @@ fun ShortcutsDialog(vm: ViewerViewModel) {
     )
 }
 
-/** Read-aloud settings: what to say for figures, and the Claude key/model for descriptions. */
+/** Read-aloud settings: the voice, what to say for figures, and the Claude key/model for descriptions. */
 @Composable
 fun ReadAloudSettingsDialog(prefs: AppPrefs, vm: ViewerViewModel) {
     var mode by remember { mutableStateOf(prefs.figureMode) }
     var key by remember { mutableStateOf(prefs.claudeApiKey) }
     var model by remember { mutableStateOf(prefs.claudeModel) }
+    var voice by remember { mutableStateOf(prefs.voiceName) }
     var showKey by remember { mutableStateOf(false) }
+    var allLanguages by remember { mutableStateOf(false) }
+    val voices by vm.voices.collectAsState()
+    val defaultVoice by vm.defaultVoice.collectAsState()
+    LaunchedEffect(Unit) { vm.loadVoices() }
+    val language = Locale.getDefault().language
+    val shown = voices.filter { allLanguages || it.locale.language == language || it.name == voice }
     AlertDialog(
-        onDismissRequest = vm::dismissDialog,
+        onDismissRequest = vm::cancelReadAloudSettings,
         title = { Text("Read aloud") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Voice:", style = MaterialTheme.typography.bodyMedium)
+                if (voices.isEmpty()) {
+                    Text("Loading the speech engine's voices…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                }
+                RadioRow(
+                    "Engine default" + (defaultVoice?.let { d -> voices.firstOrNull { it.name == d }?.let { " (${it.label})" } } ?: ""),
+                    voice.isEmpty(),
+                ) { voice = "" }
+                for (v in shown) RadioRow(v.label + if (v.quality >= 400) " ★" else "", voice == v.name) { voice = v.name }
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(checked = allLanguages, onCheckedChange = { allLanguages = it })
+                    Text("All languages", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { vm.previewVoice(voice, prefs.speechRate) }, enabled = voices.isNotEmpty()) { Text("Listen") }
+                }
+                Text(
+                    "★ = the engine's highest quality. \"network\" voices need internet and sound the most natural. " +
+                        "More voices and other engines: Settings → Accessibility → Text-to-speech output.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 Text("When the text first mentions a figure or table:", style = MaterialTheme.typography.bodyMedium)
                 RadioRow("Skip it", mode == FigureMode.NONE) { mode = FigureMode.NONE }
                 RadioRow("Read its caption", mode == FigureMode.CAPTION) { mode = FigureMode.CAPTION }
@@ -260,8 +293,8 @@ fun ReadAloudSettingsDialog(prefs: AppPrefs, vm: ViewerViewModel) {
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { vm.setReadAloudPrefs(mode, key, model) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = vm::dismissDialog) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = { vm.setReadAloudPrefs(mode, key, model, voice) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = vm::cancelReadAloudSettings) { Text("Cancel") } },
     )
 }
 

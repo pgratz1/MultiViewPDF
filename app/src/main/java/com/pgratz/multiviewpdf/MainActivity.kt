@@ -141,7 +141,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        vm.pauseReading()
+        // Reading continues in the background (ReadAloudService); only the document is saved here.
         vm.autosave()
     }
 }

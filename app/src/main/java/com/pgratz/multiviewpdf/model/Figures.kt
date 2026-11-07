@@ -50,7 +50,7 @@ object FigureRefs {
     }
 }
 
-/** One step of a page's read-aloud: a body sentence or a figure note inserted after a reference. */
+/** One step of a page's read-aloud: a body sentence or a figure note inserted before a reference. */
 sealed interface ReadItem {
     val quads: List<PQuad>
 }
@@ -60,7 +60,8 @@ data class Body(val sentence: Sentence) : ReadItem {
 }
 
 /**
- * Spoken after the sentence that first mentions [key]. [figure] is null when the caption
+ * Spoken just before the sentence that first mentions [key], the way a reader would look at
+ * the figure before the text that discusses it. [figure] is null when the caption
  * hasn't been found yet (the reader re-resolves before speaking). [quads] outline the
  * figure when it is on this page, else empty.
  */
@@ -75,15 +76,22 @@ class ReadingPlan(val page: Int, val layout: PageLayout?, val items: List<ReadIt
 
     val referencedKeys: Set<FigureKey> get() = items.filterIsInstance<FigureNote>().map { it.key }.toSet()
 
-    /** The body sentence a note at [itemIndex] follows, if any. */
+    /** The body sentence a note at [itemIndex] introduces (the next body item), if any. */
     fun referencingSentence(itemIndex: Int): String? {
-        var i = itemIndex - 1
-        while (i >= 0) {
+        var i = itemIndex + 1
+        while (i < items.size) {
             val it = items[i]
             if (it is Body) return it.sentence.text
-            i--
+            i++
         }
         return null
+    }
+
+    /** [itemIndex] moved back over the figure notes that introduce it, so a sentence is read with its notes. */
+    fun withLeadingNotes(itemIndex: Int): Int {
+        var i = itemIndex
+        while (i > 0 && items[i - 1] is FigureNote) i--
+        return i
     }
 }
 
@@ -95,19 +103,20 @@ object ReadingPlans {
         return out
     }
 
-    /** Body sentences in order, each followed by notes for the figures it mentions for the first time on this page. */
+    /** Body sentences in order, each preceded by notes for the figures it mentions for the first time on this page. */
     fun build(page: Int, layout: PageLayout?, sentences: List<Sentence>, resolve: (FigureKey) -> Figure?): ReadingPlan {
         val items = ArrayList<ReadItem>(sentences.size + 4)
         val noted = HashSet<FigureKey>()
         for (s in sentences) {
-            items += Body(s)
-            if (Layout.CAPTION_STRICT.containsMatchIn(s.text)) continue
-            for (key in FigureRefs.find(s.text)) {
-                if (!noted.add(key)) continue
-                val fig = resolve(key)
-                val quads = if (fig != null && fig.page == page) listOf(PQuad.of(fig.caption.extent)) else emptyList()
-                items += FigureNote(key, fig, page, quads)
+            if (!Layout.CAPTION_STRICT.containsMatchIn(s.text)) {
+                for (key in FigureRefs.find(s.text)) {
+                    if (!noted.add(key)) continue
+                    val fig = resolve(key)
+                    val quads = if (fig != null && fig.page == page) listOf(PQuad.of(fig.caption.extent)) else emptyList()
+                    items += FigureNote(key, fig, page, quads)
+                }
             }
+            items += Body(s)
         }
         return ReadingPlan(page, layout, items)
     }

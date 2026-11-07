@@ -9,6 +9,9 @@
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Read-aloud keeps going with the screen off, as a media-playback foreground service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:allowBackup="true"
@@ -45,6 +48,11 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".tts.ReadAloudService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 
 </manifest>

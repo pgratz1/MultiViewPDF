@@ -4,7 +4,7 @@
 
 Read-aloud (shipped 2026-11-06) walks a page's text in MuPDF block order. On two-column research papers such as the sample in the repo root, `2027_ISCA__ORAP_Paper (1).pdf` (pdfTeX, ACM format, 13 pages, 17 figures, 2 tables), it follows the columns correctly but also reads, in place: figure captions and sub-captions ("(a) PRAC-based mitigation…"), chart tick labels and table cells where they have a text layer, the running header on every page ("Optimizing Hardware Prefetchers… / ISCA '27, June…"), the ACM copyright block, and 4-digit submission line numbers (the current numeric filter only drops 1–3 digits).
 
-The user wants figures and tables handled the way a human reader would: skip their contents in place, and when the body text first refers to "Figure 3" or "Table 1", say what that figure shows, right after the referencing sentence. The description is the caption by default, or a Claude-generated description of the rendered figure when an API key is configured.
+The user wants figures and tables handled the way a human reader would: skip their contents in place, and when the body text first refers to "Figure 3" or "Table 1", say what that figure shows, right after the referencing sentence. (Changed 2026-11-07: the note now comes *before* the referencing sentence, the way a reader glances at the figure first.) The description is the caption by default, or a Claude-generated description of the rendered figure when an API key is configured.
 
 Decisions made with the user:
 - **Claude model:** `claude-opus-5-5`, low effort. Each figure is described once per document and cached on disk (about one cent per figure; the sample costs ~$0.20 once).

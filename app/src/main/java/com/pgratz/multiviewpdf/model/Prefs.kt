@@ -15,6 +15,8 @@ data class AppPrefs(
     val recent: List<RecentDoc> = emptyList(),
     /** Read-aloud speed; 1.0 is the engine's normal rate. */
     val speechRate: Float = 1f,
+    /** Engine voice name ([android.speech.tts.Voice.getName]); empty = the engine's default voice. */
+    val voiceName: String = "",
     /** What read-aloud says when the text first mentions a figure or table. */
     val figureMode: FigureMode = FigureMode.CAPTION,
     /** Anthropic API key for [FigureMode.CLAUDE]; app-private storage, never logged. */

@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
+import java.util.Locale
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
@@ -12,7 +14,27 @@ import kotlinx.coroutines.flow.SharedFlow
  * thread, so they are only turned into [events]; the ViewModel collects those on Main.
  * All methods are meant to be called from the main thread (the engine is created there).
  */
-class SpeechReader(context: Context, initialRate: Float) {
+class SpeechReader(context: Context, initialRate: Float, initialVoice: String = "") {
+    /** One engine voice, for the settings picker. [name] is what [AppPrefs.voiceName] stores. */
+    data class VoiceInfo(val name: String, val locale: Locale, val quality: Int, val network: Boolean, val installed: Boolean) {
+        /** "English (United States) · Voice III · network" style label; the raw name is not meant for people. */
+        val label: String get() = buildString {
+            append(locale.displayName)
+            append(" · ").append(prettyName(name, locale))
+            if (network) append(" · network")
+            if (!installed) append(" · not downloaded")
+        }
+        companion object {
+            /** Strips the locale prefix Google uses ("en-us-x-tpc-local" → "tpc local"). */
+            fun prettyName(name: String, locale: Locale): String {
+                val tag = locale.toLanguageTag().lowercase()
+                var n = name.lowercase().removePrefix(tag).removePrefix(tag.replace('-', '_')).trimStart('-', '_')
+                n = n.removePrefix("x-").removePrefix("x_")
+                return if (n.isEmpty()) name else n.replace('-', ' ').replace('_', ' ')
+            }
+        }
+    }
+
     sealed interface Event {
         data object Ready : Event
         data object InitFailed : Event
@@ -30,6 +52,7 @@ class SpeechReader(context: Context, initialRate: Float) {
         private set
     private var failed = false
     private var rate = initialRate
+    private var voiceName = initialVoice
     private var tts: TextToSpeech? = null
 
     /** speak() calls made before the engine finished initialising. */
@@ -56,6 +79,7 @@ class SpeechReader(context: Context, initialRate: Float) {
                 .build()
         )
         t.setSpeechRate(rate)
+        applyVoice(t)
         t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String) { _events.tryEmit(Event.Started(utteranceId)) }
             override fun onDone(utteranceId: String) { _events.tryEmit(Event.Done(utteranceId)) }
@@ -97,6 +121,39 @@ class SpeechReader(context: Context, initialRate: Float) {
         rate = r
         if (isReady) tts?.setSpeechRate(r)
     }
+
+    /** Switches to the engine voice called [name] ("" = engine default). Applies to later utterances. */
+    fun setVoice(name: String) {
+        voiceName = name
+        if (isReady) tts?.let { applyVoice(it) }
+    }
+
+    private fun applyVoice(t: TextToSpeech) {
+        val wanted = voiceName
+        if (wanted.isEmpty()) {
+            runCatching { t.defaultVoice }.getOrNull()?.let { runCatching { t.voice = it } }
+            return
+        }
+        val v = runCatching { t.voices }.getOrNull()?.firstOrNull { it.name == wanted } ?: return
+        runCatching { t.voice = v }
+    }
+
+    /** The engine's voices, best quality first; empty until [isReady]. [Voice.getFeatures] flags network voices. */
+    fun voices(): List<VoiceInfo> {
+        val t = tts ?: return emptyList()
+        if (!isReady) return emptyList()
+        val all = runCatching { t.voices }.getOrNull() ?: return emptyList()
+        return all.map { v ->
+            VoiceInfo(
+                v.name, v.locale, v.quality,
+                network = v.isNetworkConnectionRequired || v.features?.contains("networkTts") == true,
+                installed = v.features?.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) != true,
+            )
+        }.sortedWith(compareByDescending<VoiceInfo> { it.quality }.thenBy { it.locale.toLanguageTag() }.thenBy { it.name })
+    }
+
+    /** The voice the engine would use when none is chosen, for the picker's "default" row. */
+    fun defaultVoiceName(): String? = if (isReady) runCatching { tts?.defaultVoice?.name }.getOrNull() else null
 
     fun shutdown() {
         pending.clear()
