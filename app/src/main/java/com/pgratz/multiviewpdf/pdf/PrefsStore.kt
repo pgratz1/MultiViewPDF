@@ -1,8 +1,10 @@
 package com.pgratz.multiviewpdf.pdf
 
 import android.content.Context
+import com.pgratz.multiviewpdf.BuildConfig
 import com.pgratz.multiviewpdf.model.AppPrefs
 import com.pgratz.multiviewpdf.model.FigureDescriptions
+import com.pgratz.multiviewpdf.model.FigureMode
 import com.pgratz.multiviewpdf.model.ViewLayout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,8 +19,20 @@ class PrefsStore(context: Context) {
     private val appFile = File(dir, "app.json")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+    /**
+     * Saved settings, or the defaults. A key baked into the build from the repo's `.env`
+     * ([BuildConfig.ANTHROPIC_API_KEY]) fills in whenever no key has been saved, so a reinstall
+     * (which wipes `app.json`) doesn't ask for it again; on a first launch it also selects
+     * Claude descriptions. A key typed in settings always wins.
+     */
     suspend fun loadApp(): AppPrefs = withContext(Dispatchers.IO) {
-        runCatching { json.decodeFromString<AppPrefs>(appFile.readText()) }.getOrDefault(AppPrefs())
+        val saved = runCatching { json.decodeFromString<AppPrefs>(appFile.readText()) }.getOrNull()
+        val built = BuildConfig.ANTHROPIC_API_KEY.trim()
+        when {
+            saved == null -> if (built.isEmpty()) AppPrefs() else AppPrefs(claudeApiKey = built, figureMode = FigureMode.CLAUDE)
+            saved.claudeApiKey.isBlank() && built.isNotEmpty() -> saved.copy(claudeApiKey = built)
+            else -> saved
+        }
     }
 
     suspend fun saveApp(p: AppPrefs) = withContext(Dispatchers.IO) {

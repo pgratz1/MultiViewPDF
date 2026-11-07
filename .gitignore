@@ -3,6 +3,8 @@
 build/
 app/build/
 local.properties
+# Developer secrets baked into the build (see .env.example).
+.env
 *.jks
 *.keystore
 *.iml

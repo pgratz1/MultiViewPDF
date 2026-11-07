@@ -85,6 +85,8 @@ Gradle 8.11 needs a JDK no newer than 23 to run on; if your default `java` is ne
 
 The optional Claude figure descriptions use the Anthropic Java SDK, which adds roughly 50 MB to the unshrunken debug APK. Nothing is sent anywhere unless you enter an API key in the app.
 
+To avoid retyping the key after every reinstall, copy `.env.example` to `.env` at the repo root and put your key in it (`ANTHROPIC_API_KEY=sk-ant-...`). Gradle bakes it into `BuildConfig`; a fresh install then starts with that key and "Describe it with Claude" selected. A key typed in the app still takes precedence. `.env` is git-ignored, but the key sits in plain text inside the APK, so don't hand that APK to anyone.
+
 `local.properties` must point at your SDK (`sdk.dir=/path/to/Android/Sdk`). Android Studio creates it for you.
 
 Device requirements:

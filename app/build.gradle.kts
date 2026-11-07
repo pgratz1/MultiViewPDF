@@ -1,9 +1,22 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+/**
+ * Developer secrets from the git-ignored `.env` at the repo root (`KEY=value` lines; see `.env.example`),
+ * falling back to the process environment. Baked into [BuildConfig] so a fresh install already has the
+ * Anthropic key instead of asking for it again under "Read-aloud settings…".
+ */
+val dotEnv: Map<String, String> = rootProject.file(".env").takeIf { it.isFile }?.let { f ->
+    Properties().apply { f.reader().use { load(it) } }.entries.associate { (k, v) -> k.toString() to v.toString().trim().trim('"', '\'') }
+} ?: emptyMap()
+
+fun secret(name: String): String = dotEnv[name]?.takeIf { it.isNotBlank() } ?: System.getenv(name) ?: ""
 
 android {
     namespace = "com.pgratz.multiviewpdf"
@@ -21,6 +34,8 @@ android {
             // MuPDF also ships armeabi-v7a/x86, which only bloat the APK.
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+        // Empty when no .env / environment variable is set; the app then relies on the key typed in settings.
+        buildConfigField("String", "ANTHROPIC_API_KEY", "\"${secret("ANTHROPIC_API_KEY")}\"")
     }
 
     buildTypes {
@@ -53,6 +68,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

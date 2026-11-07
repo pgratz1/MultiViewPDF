@@ -12,9 +12,9 @@ Tests: `./gradlew testDebugUnitTest` → 90 pass (14 of them golden tests on rea
 
 ## Not yet done / verify first on the home machine
 
-- **A real Claude description has never been generated.** Only the failure path (bogus key → "API key rejected" → caption) was exercised. On the phone: ⋮ → Read-aloud settings → "Describe it with Claude", paste a Console API key (your Max plan includes $100/month of Platform credits; create the key at platform.claude.com), press **Test**, then play from page 3 of the ISCA paper. Expect one `claude figure-N … ms` line per figure in logcat and a JSON file under `files/prefs/figures/`.
+- **A real Claude description has never been generated.** Only the failure path (bogus key → "API key rejected" → caption) was exercised. Put the key in `.env` at the repo root (`ANTHROPIC_API_KEY=…`, see `.env.example`; Dropbox carries it to the other machines) and every install has it already. Or on the phone: ⋮ → Read-aloud settings → "Describe it with Claude", paste a Console API key (your Max plan includes $100/month of Platform credits; create the key at platform.claude.com), press **Test**, then play from page 3 of the ISCA paper. Expect one `claude figure-N … ms` line per figure in logcat and a JSON file under `files/prefs/figures/`.
 - **Glasses / desktop mode** untested for the new features: hover labels and hand cursor on links, media keys, the TTS bar placement in fullscreen.
-- The Pixel has today's final build installed (debug, signed by the XPS). **Installing a home-machine build over it will fail** with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; either `adb uninstall com.pgratz.multiviewpdf` first (loses view prefs only; annotations live in the PDFs) or copy `~/.android/debug.keystore` from one machine to the other.
+- The Pixel has today's final build installed (debug, signed by the XPS). **Installing a home-machine build over it will fail** with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; either `adb uninstall com.pgratz.multiviewpdf` first (loses view prefs only; annotations live in the PDFs) or copy `~/.android/debug.keystore` from one machine to the other. Since 2026-11-07 the Claude key survives a reinstall when it is in `.env`.
 
 ## Known gaps / ideas, roughly in priority order
 
