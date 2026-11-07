@@ -13,7 +13,7 @@ The main use case is reading patents and papers: keep a figure locked in one pan
   - **Lock** either pane to keep a page on screen while the other one turns.
   - In two-page mode, pages sit against the centre of the screen like an open book.
 - **Per-pane rotation** (view only; the file isn't changed).
-- **Whole-document crop**, set by hand or detected automatically. It is view only and remembered for each document.
+- **Whole-document crop**, set by hand or detected automatically. Auto-crop crops to the text block: submission line numbers, side banners, running headers and page numbers are ignored. It is view only and remembered for each document.
 - **Sticky notes and highlights saved as standard PDF annotations** (`Text` and `Highlight`).
   - Saves are incremental: the original bytes stay untouched and the changes are appended, so Okular, Xodo and Acrobat see the annotations.
   - Pages without a text layer (scans) get rectangle highlights.
