@@ -869,7 +869,15 @@ fun PdfPane(
             )
         }
 
-        if (!ui.fullscreen) PaneFooter(index, ui, vm, Modifier.align(Alignment.BottomCenter))
+        // In two-pane mode each footer hugs the middle of the screen, where the glasses are sharp.
+        if (!ui.fullscreen) {
+            val where = when {
+                ui.layout.mode != ViewMode.DUAL -> Alignment.BottomCenter
+                index == 0 -> Alignment.BottomEnd
+                else -> Alignment.BottomStart
+            }
+            PaneFooter(index, ui, vm, Modifier.align(where).padding(horizontal = 8.dp))
+        }
 
         val menu = ui.menu
         if (menu != null && menu.pane == index) {

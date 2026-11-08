@@ -95,6 +95,7 @@ Verified on the emulator:
 - The user (pgratz) builds personal apps in `~/Dropbox/Documents/Android_Dev/`.
 - Target hardware: a Pixel 10 on Android 17 driving VITURE Beast glasses in desktop mode. Sometimes the phone is mirrored and used with touch.
 - Design everything for **both touch and mouse/keyboard**, with a dark UI (black is see-through on the glasses).
+- The glasses are blurry towards the edges of their screen: keep controls near the middle (toolbar buttons are centred, pane footers hug the centre split in two-pane mode, the crop editor's buttons are centred). Don't park new buttons in corners.
 - GitHub `main` (`pgratz1/MultiViewPDF`) is the coherence point between machines: pull before working, commit and push when done. `~/Documents` is a symlink to `~/Dropbox/Documents`, so `~/Documents/Android_Dev/MultiViewPDF` is this same folder, not a second copy.
 - This folder syncs via Dropbox between the home desktop, the laptop and the XPS-8960 desktop. `app/build`, `.gradle` and `.kotlin` (~300 MB) sync too.
   - If Gradle acts strangely after switching machines, run `./gradlew clean`.

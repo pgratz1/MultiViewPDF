@@ -134,13 +134,15 @@ fun ViewerScreen(ui: UiState, vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs:
 private fun TopBar(ui: UiState, vm: ViewerViewModel, name: String, onOpen: () -> Unit, onSaveAs: () -> Unit) {
     val layout = ui.layout
     val dual = layout.mode == ViewMode.DUAL
+    // The buttons sit in the middle of the bar: the glasses are blurry towards the edges of
+    // their screen. The title takes the left-over space on the left (it may vanish on a
+    // narrow phone screen, where the button row scrolls instead).
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
             Modifier.fillMaxWidth().height(48.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            BarIcon(Icons.Filled.Close, "Close document") { vm.requestClose() }
-            Box(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+            Box(Modifier.weight(1f).padding(start = 12.dp, end = 4.dp)) {
                 Tip(if (ui.dirty) "$name (unsaved changes)" else name) {
                     Text(
                         (if (ui.dirty) "• " else "") + name,
@@ -154,6 +156,8 @@ private fun TopBar(ui: UiState, vm: ViewerViewModel, name: String, onOpen: () ->
                 Modifier.horizontalScroll(rememberScrollState()),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                BarIcon(Icons.Filled.Close, "Close document") { vm.requestClose() }
+                Spacer(Modifier.width(8.dp))
                 BarIcon(
                     if (dual) Icons.Filled.ViewAgenda else Icons.Filled.ViewColumn,
                     if (dual) "Single page (1)" else "Two pages (2)",
@@ -198,6 +202,7 @@ private fun TopBar(ui: UiState, vm: ViewerViewModel, name: String, onOpen: () ->
                 ) { vm.save() }
                 OverflowMenu(vm, onOpen, onSaveAs)
             }
+            Spacer(Modifier.weight(1f))
         }
     }
 }

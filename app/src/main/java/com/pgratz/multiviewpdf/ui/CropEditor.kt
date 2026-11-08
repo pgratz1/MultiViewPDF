@@ -77,8 +77,8 @@ fun CropEditor(ui: UiState, vm: ViewerViewModel) {
             .pointerInput(Unit) { detectTapGestures { } } // don't let touches reach the panes
     ) {
         Column(Modifier.fillMaxSize().background(Color(0xFF121212)).padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Crop all pages", color = Color.White, modifier = Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                Text("Crop all pages", color = Color.White, modifier = Modifier.padding(end = 24.dp))
                 IconButton(onClick = { page = (page - 1).coerceAtLeast(0) }) {
                     Icon(Icons.Filled.ChevronLeft, "Previous sample page", tint = Color.White)
                 }
@@ -166,7 +166,7 @@ fun CropEditor(ui: UiState, vm: ViewerViewModel) {
             }
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp))
@@ -179,7 +179,7 @@ fun CropEditor(ui: UiState, vm: ViewerViewModel) {
                 }) { Text("Auto") }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { margins = CropMargins.NONE }) { Text("Reset") }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(40.dp))
                 TextButton(onClick = vm::dismissDialog) { Text("Cancel") }
                 Button(onClick = { vm.setCrop(margins) }) { Text("Apply") }
             }
