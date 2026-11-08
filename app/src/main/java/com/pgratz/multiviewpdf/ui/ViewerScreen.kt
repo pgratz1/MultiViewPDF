@@ -250,25 +250,20 @@ private fun HighlightColorButton(ui: UiState, vm: ViewerViewModel) {
     }
 }
 
+/**
+ * Acts directly, like the C key: toggles the crop, or opens the editor when none is set.
+ * No popup menu here on purpose: popup windows have been unreliable with the injected
+ * mouse on the glasses in desktop mode; the editor is also in the ⋮ menu and on Shift+C.
+ */
 @Composable
 private fun CropButton(ui: UiState, vm: ViewerViewModel) {
-    var open by remember { mutableStateOf(false) }
     val l = ui.layout
-    Box {
-        ToolIcon(Icons.Filled.Crop, "Crop (C, Shift+C)", l.cropEnabled) { open = true }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (!l.crop.isNone) {
-                DropdownMenuItem(
-                    text = { Text(if (l.cropEnabled) "Show full pages (C)" else "Show cropped (C)") },
-                    onClick = { open = false; vm.toggleCrop() },
-                )
-            }
-            DropdownMenuItem(
-                text = { Text("Edit crop… (Shift+C)") },
-                onClick = { open = false; vm.openDialog(Dialog.CropEditor) },
-            )
-        }
+    val label = when {
+        l.crop.isNone -> "Crop: set up (C)"
+        l.cropEnabled -> "Crop: show full pages (C)"
+        else -> "Crop: show cropped (C)"
     }
+    ToolIcon(Icons.Filled.Crop, label, l.cropEnabled, vm::toggleCrop)
 }
 
 @Composable
@@ -279,6 +274,10 @@ private fun OverflowMenu(vm: ViewerViewModel, onOpen: () -> Unit, onSaveAs: () -
             IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, "More") }
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("Edit crop… (Shift+C)") },
+                onClick = { open = false; vm.openDialog(Dialog.CropEditor) },
+            )
             DropdownMenuItem(text = { Text("Go to page… (G)") }, onClick = {
                 open = false; vm.openDialog(Dialog.GoToPage(vm.state.value.layout.active))
             })
