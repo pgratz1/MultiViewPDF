@@ -1,5 +1,6 @@
 package com.pgratz.multiviewpdf.ui
 
+import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -109,6 +110,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -145,6 +147,9 @@ private class Rendered(
 
 /** Durations of the view glide (zoom / scroll jumps) and the page-turn slide. */
 private const val GLIDE_MS = 160
+
+/** Wheel events closer together than this are one continuous scroll, not separate notches. */
+private const val WHEEL_STREAM_MS = 80L
 private const val TURN_MS = 180
 
 /** How far a turning page slides, as a fraction of the pane size. */
@@ -167,10 +172,11 @@ private class AnimFrame(
 private class Outgoing(val image: Rendered?, val k: Float, val offset: Offset, val size: Size)
 
 /**
- * Short transitions, applied while drawing. Discrete view jumps (double-tap, keys, wheel,
- * edge taps, fit) glide from what was on screen to the new view; page turns slide the
- * old page out and the new one in from the direction of travel, once the new page has
- * rendered. Drags and pinches follow the finger and are never animated.
+ * Short transitions, applied while drawing. Discrete view jumps (double-tap, keys, wheel
+ * notches, edge taps, fit) glide from what was on screen to the new view; page turns slide
+ * the old page out and the new one in from the direction of travel, once the new page has
+ * rendered. Drags, pinches and streamed wheel input (a touchpad's two-finger scroll or
+ * zoom) follow the fingers and are never animated.
  */
 private class PaneAnimator(private val scope: CoroutineScope) {
     private val glide = Animatable(1f)
@@ -307,7 +313,9 @@ private class PaneController(val index: Int, val vm: ViewerViewModel, scope: Cor
     var transform: PageTransform? = null
     var viewW = 0f
     var viewH = 0f
-    var wheelAccum = 0f
+    /** When the last wheel event arrived, and until when wheel movement skips the glide. */
+    var lastWheelMs = 0L
+    var directUntilMs = 0L
     var enterFromBottom = false
     var enterFromRight = false
 
@@ -367,28 +375,24 @@ private class PaneController(val index: Int, val vm: ViewerViewModel, scope: Cor
     }
 
     /**
-     * Wheel or arrow-key scrolling: scrolls within a zoomed page, then turns the page once
-     * the edge is reached ([notches] of push past the edge).
+     * Arrow-key scrolling: scrolls within a zoomed page, then turns the page at its edge.
+     * The wheel (and so a touchpad's two-finger scroll) only pans and never turns the
+     * page — panning around a zoomed figure kept running into the edge and losing the page.
      */
-    fun scrollOrTurn(dy: Float, notches: Float) {
+    fun scrollOrTurn(dy: Float) {
         val t = transform ?: return
         val o = offset
         val ch = t.contentHeight
         val atTop = ch <= viewH || o.y >= -0.5f
         val atBottom = ch <= viewH || o.y <= viewH - ch + 0.5f
         if ((dy > 0 && !atBottom) || (dy < 0 && !atTop)) {
-            wheelAccum = 0f
             panBy(Offset(0f, -dy))
             return
         }
-        wheelAccum += dy
-        if (abs(wheelAccum) >= notches * viewH * 0.04f) {
-            val dir = if (wheelAccum > 0) 1 else -1
-            wheelAccum = 0f
-            enterFromBottom = dir < 0
-            turnVertical = true
-            vm.turnPane(index, dir)
-        }
+        val dir = if (dy > 0) 1 else -1
+        enterFromBottom = dir < 0
+        turnVertical = true
+        vm.turnPane(index, dir)
     }
 
     /**
@@ -510,13 +514,12 @@ fun PdfPane(
             ctl.pan = Offset(if (ctl.enterFromRight) -1e7f else 0f, if (ctl.enterFromBottom) -1e7f else 0f)
             ctl.enterFromBottom = false
             ctl.enterFromRight = false
-            ctl.wheelAccum = 0f
         }
 
         LaunchedEffect(Unit) {
             vm.paneEvents.collect { ev ->
                 if (ev.pane == index && ev is com.pgratz.multiviewpdf.PaneEvent.Scroll) {
-                    ctl.scrollOrTurn(ev.fraction * ctl.viewH, notches = 0f)
+                    ctl.scrollOrTurn(ev.fraction * ctl.viewH)
                 }
             }
         }
@@ -734,12 +737,22 @@ fun PdfPane(
                             when (ev.type) {
                                 PointerEventType.Scroll -> {
                                     val d = c.scrollDelta
+                                    // A touchpad or hi-res wheel sends a stream of small
+                                    // fractional steps; a classic wheel sends whole notches
+                                    // well apart. A stream must move the page directly: the
+                                    // glide restarts on every event and, at one event per
+                                    // frame, never leaves the slow start of its easing curve.
+                                    val stream = d.x % 1f != 0f || d.y % 1f != 0f ||
+                                        c.uptimeMillis - ctl.lastWheelMs < WHEEL_STREAM_MS
+                                    ctl.lastWheelMs = c.uptimeMillis
+                                    if (stream) ctl.directUntilMs = c.uptimeMillis + WHEEL_STREAM_MS
                                     if (ev.keyboardModifiers.isCtrlPressed) {
-                                        if (d.y != 0f) ctl.zoomAround(c.position, if (d.y < 0) 1.1f else 1 / 1.1f)
+                                        // 10 % per notch, proportionally for part of a notch.
+                                        if (d.y != 0f) ctl.zoomAround(c.position, 1.1f.pow(-d.y))
                                     } else {
                                         val step = 64.dp.toPx()
-                                        if (d.y != 0f) ctl.scrollOrTurn(d.y * step, notches = 2f)
-                                        if (d.x != 0f) ctl.panBy(Offset(-d.x * step, 0f))
+                                        // Pans only; the wheel never turns the page.
+                                        ctl.panBy(Offset(-d.x * step, -d.y * step))
                                     }
                                     c.consume()
                                 }
@@ -753,7 +766,8 @@ fun PdfPane(
         ) {
             val t = transform ?: return@Canvas
             val o = ctl.offset
-            val f = ctl.anim.frame(page, t, o, size, base, ctl.gestureActive, ctl.turnVertical)
+            val direct = ctl.gestureActive || SystemClock.uptimeMillis() < ctl.directUntilMs
+            val f = ctl.anim.frame(page, t, o, size, base, direct, ctl.turnVertical)
             ctl.turnVertical = false
             val paper = if (invert) Color.Black else Color.White
             val filter = if (invert) InvertFilter else null

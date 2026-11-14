@@ -78,7 +78,7 @@ Verified on the emulator:
    - Check the rectangle highlight fallback on image-only pages.
 2. Desktop mode on the glasses, driven by the sibling `../AR_Touchpad` app (it injects mouse events):
    - right-click menu
-   - wheel scroll/page turn, Ctrl+wheel zoom
+   - wheel scroll (pans only, never turns the page), Ctrl+wheel zoom
    - hover note previews
    - keyboard shortcuts with a BT keyboard
    - window resizing; the activity handles config changes itself, so it shouldn't restart

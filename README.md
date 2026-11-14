@@ -37,7 +37,8 @@ Everything works with touch, with a mouse, and with a keyboard. Hover over any b
 | `→` / `PgDn` / `Space` | Next page (a spread turns by 2) |
 | `←` / `PgUp` / `Shift+Space` | Previous page |
 | `Shift+←` / `Shift+→` | Shift a spread by one page |
-| `↑` / `↓`, mouse wheel | Scroll the active pane; turns the page at the end |
+| `↑` / `↓` | Scroll the active pane; turns the page at the end |
+| Mouse wheel, two-finger scroll | Scroll the active pane (never turns the page) |
 | `Home` / `End` | First / last page |
 | `Tab` | Switch active pane |
 | `1` / `2` | Single / two-page mode |
